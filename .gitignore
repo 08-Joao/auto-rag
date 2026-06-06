@@ -1,0 +1,61 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.npm/
+.yarn/
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+coverage/
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Local env/config
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Generated RAG data and heavy local documents
+documents/
+rag_chunks_output/
+vectorstores/
+*.faiss
+*.pkl
+*.pickle
+*.parquet
+*.sqlite
+*.sqlite3
+*.db
+
+# Large/raw document formats
+*.pdf
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.csv
+
+# Logs and caches
+*.log
+logs/
+.cache/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/extensions.json
