@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
+import type { Request, Response } from 'express';
 
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -33,5 +43,45 @@ export class ChatsController {
     @Body() dto: SendMessageDto,
   ) {
     return this.chatsService.sendMessage(id, user.id, dto.content);
+  }
+
+  @Post(':id/messages/stream')
+  async streamMessage(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: SendMessageDto,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    const abortController = new AbortController();
+    req.on('close', () => abortController.abort());
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    const writeEvent = (event: unknown) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    try {
+      for await (const event of this.chatsService.streamMessage(
+        id,
+        user.id,
+        dto.content,
+        abortController.signal,
+      )) {
+        if (abortController.signal.aborted) {
+          break;
+        }
+        writeEvent(event);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      writeEvent({ type: 'error', message });
+    } finally {
+      res.end();
+    }
   }
 }

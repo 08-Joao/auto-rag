@@ -45,6 +45,7 @@ model Message {
 
   chatId  String
   content String
+  metadata Json?
   userId  String?
   sender  MessageSender
 

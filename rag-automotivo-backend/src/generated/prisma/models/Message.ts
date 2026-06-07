@@ -48,6 +48,7 @@ export type MessageCountAggregateOutputType = {
   id: number
   chatId: number
   content: number
+  metadata: number
   userId: number
   sender: number
   createdAt: number
@@ -80,6 +81,7 @@ export type MessageCountAggregateInputType = {
   id?: true
   chatId?: true
   content?: true
+  metadata?: true
   userId?: true
   sender?: true
   createdAt?: true
@@ -163,6 +165,7 @@ export type MessageGroupByOutputType = {
   id: string
   chatId: string
   content: string
+  metadata: runtime.JsonValue | null
   userId: string | null
   sender: $Enums.MessageSender
   createdAt: Date
@@ -194,6 +197,7 @@ export type MessageWhereInput = {
   id?: Prisma.StringFilter<"Message"> | string
   chatId?: Prisma.StringFilter<"Message"> | string
   content?: Prisma.StringFilter<"Message"> | string
+  metadata?: Prisma.JsonNullableFilter<"Message">
   userId?: Prisma.StringNullableFilter<"Message"> | string | null
   sender?: Prisma.EnumMessageSenderFilter<"Message"> | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFilter<"Message"> | Date | string
@@ -206,6 +210,7 @@ export type MessageOrderByWithRelationInput = {
   id?: Prisma.SortOrder
   chatId?: Prisma.SortOrder
   content?: Prisma.SortOrder
+  metadata?: Prisma.SortOrderInput | Prisma.SortOrder
   userId?: Prisma.SortOrderInput | Prisma.SortOrder
   sender?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
@@ -221,6 +226,7 @@ export type MessageWhereUniqueInput = Prisma.AtLeast<{
   NOT?: Prisma.MessageWhereInput | Prisma.MessageWhereInput[]
   chatId?: Prisma.StringFilter<"Message"> | string
   content?: Prisma.StringFilter<"Message"> | string
+  metadata?: Prisma.JsonNullableFilter<"Message">
   userId?: Prisma.StringNullableFilter<"Message"> | string | null
   sender?: Prisma.EnumMessageSenderFilter<"Message"> | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFilter<"Message"> | Date | string
@@ -233,6 +239,7 @@ export type MessageOrderByWithAggregationInput = {
   id?: Prisma.SortOrder
   chatId?: Prisma.SortOrder
   content?: Prisma.SortOrder
+  metadata?: Prisma.SortOrderInput | Prisma.SortOrder
   userId?: Prisma.SortOrderInput | Prisma.SortOrder
   sender?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
@@ -249,6 +256,7 @@ export type MessageScalarWhereWithAggregatesInput = {
   id?: Prisma.StringWithAggregatesFilter<"Message"> | string
   chatId?: Prisma.StringWithAggregatesFilter<"Message"> | string
   content?: Prisma.StringWithAggregatesFilter<"Message"> | string
+  metadata?: Prisma.JsonNullableWithAggregatesFilter<"Message">
   userId?: Prisma.StringNullableWithAggregatesFilter<"Message"> | string | null
   sender?: Prisma.EnumMessageSenderWithAggregatesFilter<"Message"> | $Enums.MessageSender
   createdAt?: Prisma.DateTimeWithAggregatesFilter<"Message"> | Date | string
@@ -258,6 +266,7 @@ export type MessageScalarWhereWithAggregatesInput = {
 export type MessageCreateInput = {
   id?: string
   content: string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   sender: $Enums.MessageSender
   createdAt?: Date | string
   updatedAt?: Date | string
@@ -269,6 +278,7 @@ export type MessageUncheckedCreateInput = {
   id?: string
   chatId: string
   content: string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   userId?: string | null
   sender: $Enums.MessageSender
   createdAt?: Date | string
@@ -278,6 +288,7 @@ export type MessageUncheckedCreateInput = {
 export type MessageUpdateInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   sender?: Prisma.EnumMessageSenderFieldUpdateOperationsInput | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -289,6 +300,7 @@ export type MessageUncheckedUpdateInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   chatId?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   userId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   sender?: Prisma.EnumMessageSenderFieldUpdateOperationsInput | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -299,6 +311,7 @@ export type MessageCreateManyInput = {
   id?: string
   chatId: string
   content: string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   userId?: string | null
   sender: $Enums.MessageSender
   createdAt?: Date | string
@@ -308,6 +321,7 @@ export type MessageCreateManyInput = {
 export type MessageUpdateManyMutationInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   sender?: Prisma.EnumMessageSenderFieldUpdateOperationsInput | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -317,6 +331,7 @@ export type MessageUncheckedUpdateManyInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   chatId?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   userId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   sender?: Prisma.EnumMessageSenderFieldUpdateOperationsInput | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -337,6 +352,7 @@ export type MessageCountOrderByAggregateInput = {
   id?: Prisma.SortOrder
   chatId?: Prisma.SortOrder
   content?: Prisma.SortOrder
+  metadata?: Prisma.SortOrder
   userId?: Prisma.SortOrder
   sender?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
@@ -454,6 +470,7 @@ export type EnumMessageSenderFieldUpdateOperationsInput = {
 export type MessageCreateWithoutUserInput = {
   id?: string
   content: string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   sender: $Enums.MessageSender
   createdAt?: Date | string
   updatedAt?: Date | string
@@ -464,6 +481,7 @@ export type MessageUncheckedCreateWithoutUserInput = {
   id?: string
   chatId: string
   content: string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   sender: $Enums.MessageSender
   createdAt?: Date | string
   updatedAt?: Date | string
@@ -502,6 +520,7 @@ export type MessageScalarWhereInput = {
   id?: Prisma.StringFilter<"Message"> | string
   chatId?: Prisma.StringFilter<"Message"> | string
   content?: Prisma.StringFilter<"Message"> | string
+  metadata?: Prisma.JsonNullableFilter<"Message">
   userId?: Prisma.StringNullableFilter<"Message"> | string | null
   sender?: Prisma.EnumMessageSenderFilter<"Message"> | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFilter<"Message"> | Date | string
@@ -511,6 +530,7 @@ export type MessageScalarWhereInput = {
 export type MessageCreateWithoutChatInput = {
   id?: string
   content: string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   sender: $Enums.MessageSender
   createdAt?: Date | string
   updatedAt?: Date | string
@@ -520,6 +540,7 @@ export type MessageCreateWithoutChatInput = {
 export type MessageUncheckedCreateWithoutChatInput = {
   id?: string
   content: string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   userId?: string | null
   sender: $Enums.MessageSender
   createdAt?: Date | string
@@ -556,6 +577,7 @@ export type MessageCreateManyUserInput = {
   id?: string
   chatId: string
   content: string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   sender: $Enums.MessageSender
   createdAt?: Date | string
   updatedAt?: Date | string
@@ -564,6 +586,7 @@ export type MessageCreateManyUserInput = {
 export type MessageUpdateWithoutUserInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   sender?: Prisma.EnumMessageSenderFieldUpdateOperationsInput | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -574,6 +597,7 @@ export type MessageUncheckedUpdateWithoutUserInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   chatId?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   sender?: Prisma.EnumMessageSenderFieldUpdateOperationsInput | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -583,6 +607,7 @@ export type MessageUncheckedUpdateManyWithoutUserInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   chatId?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   sender?: Prisma.EnumMessageSenderFieldUpdateOperationsInput | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -591,6 +616,7 @@ export type MessageUncheckedUpdateManyWithoutUserInput = {
 export type MessageCreateManyChatInput = {
   id?: string
   content: string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   userId?: string | null
   sender: $Enums.MessageSender
   createdAt?: Date | string
@@ -600,6 +626,7 @@ export type MessageCreateManyChatInput = {
 export type MessageUpdateWithoutChatInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   sender?: Prisma.EnumMessageSenderFieldUpdateOperationsInput | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -609,6 +636,7 @@ export type MessageUpdateWithoutChatInput = {
 export type MessageUncheckedUpdateWithoutChatInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   userId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   sender?: Prisma.EnumMessageSenderFieldUpdateOperationsInput | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -618,6 +646,7 @@ export type MessageUncheckedUpdateWithoutChatInput = {
 export type MessageUncheckedUpdateManyWithoutChatInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   content?: Prisma.StringFieldUpdateOperationsInput | string
+  metadata?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
   userId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   sender?: Prisma.EnumMessageSenderFieldUpdateOperationsInput | $Enums.MessageSender
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -630,6 +659,7 @@ export type MessageSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs 
   id?: boolean
   chatId?: boolean
   content?: boolean
+  metadata?: boolean
   userId?: boolean
   sender?: boolean
   createdAt?: boolean
@@ -642,6 +672,7 @@ export type MessageSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Exten
   id?: boolean
   chatId?: boolean
   content?: boolean
+  metadata?: boolean
   userId?: boolean
   sender?: boolean
   createdAt?: boolean
@@ -654,6 +685,7 @@ export type MessageSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Exten
   id?: boolean
   chatId?: boolean
   content?: boolean
+  metadata?: boolean
   userId?: boolean
   sender?: boolean
   createdAt?: boolean
@@ -666,13 +698,14 @@ export type MessageSelectScalar = {
   id?: boolean
   chatId?: boolean
   content?: boolean
+  metadata?: boolean
   userId?: boolean
   sender?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }
 
-export type MessageOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "chatId" | "content" | "userId" | "sender" | "createdAt" | "updatedAt", ExtArgs["result"]["message"]>
+export type MessageOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "chatId" | "content" | "metadata" | "userId" | "sender" | "createdAt" | "updatedAt", ExtArgs["result"]["message"]>
 export type MessageInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   chat?: boolean | Prisma.ChatsDefaultArgs<ExtArgs>
   user?: boolean | Prisma.Message$userArgs<ExtArgs>
@@ -696,6 +729,7 @@ export type $MessagePayload<ExtArgs extends runtime.Types.Extensions.InternalArg
     id: string
     chatId: string
     content: string
+    metadata: runtime.JsonValue | null
     userId: string | null
     sender: $Enums.MessageSender
     createdAt: Date
@@ -1128,6 +1162,7 @@ export interface MessageFieldRefs {
   readonly id: Prisma.FieldRef<"Message", 'String'>
   readonly chatId: Prisma.FieldRef<"Message", 'String'>
   readonly content: Prisma.FieldRef<"Message", 'String'>
+  readonly metadata: Prisma.FieldRef<"Message", 'Json'>
   readonly userId: Prisma.FieldRef<"Message", 'String'>
   readonly sender: Prisma.FieldRef<"Message", 'MessageSender'>
   readonly createdAt: Prisma.FieldRef<"Message", 'DateTime'>

@@ -31,6 +31,41 @@
 $ pnpm install
 ```
 
+## RAG local com LangChain e Ollama
+
+O fluxo de chat usa o módulo `src/rag` para executar um RAG local:
+
+- `RagRetrieverService`: chama um script Python para recuperar chunks em `../rag_chunks_output/manual_chunks.faiss`;
+- `scripts/retrieve_chunks.py`: lê o FAISS e `../rag_chunks_output/chunks_metadata.json`;
+- `RagService`: monta o contexto e executa a chain LangChain;
+- `OllamaService`: fornece o modelo LangChain `Ollama` apontando para `deepseek-r1:8b`.
+
+Antes de usar os chats, garanta que o índice foi gerado pelo notebook `../chunking.ipynb` e que o modelo está disponível:
+
+```bash
+$ ollama pull deepseek-r1:8b
+$ ollama list
+```
+
+Crie o ambiente Python do recuperador na raiz do projeto:
+
+```bash
+$ cd ..
+$ python3 -m venv .venv
+$ .venv/bin/pip install -r requirements.txt
+```
+
+Variáveis opcionais:
+
+```bash
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=deepseek-r1:8b
+RAG_OUTPUT_DIR=../rag_chunks_output
+RAG_TOP_K=5
+RAG_PYTHON_BIN=../.venv/bin/python
+RAG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+```
+
 ## Compile and run the project
 
 ```bash
