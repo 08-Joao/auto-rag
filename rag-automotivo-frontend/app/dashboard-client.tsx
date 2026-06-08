@@ -3,6 +3,7 @@
 import {
   Bot,
   Car,
+  ChevronRight,
   FileText,
   ImageIcon,
   LogOut,
@@ -71,14 +72,70 @@ function getSources(message: ChatMessage): RagSource[] {
 }
 
 function getImagePaths(sources: RagSource[]) {
-  return Array.from(new Set(sources.flatMap((source) => source.image_paths ?? [])));
+  return Array.from(
+    new Set(sources.flatMap((source) => source.image_paths ?? [])),
+  );
 }
 
 function shouldShowImageGallery(message: ChatMessage) {
   return message.metadata?.visual_intent === true;
 }
 
-function SourceChip({
+function titleCase(text: string) {
+  return text
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) =>
+      word.length <= 3
+        ? word.toUpperCase()
+        : `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}`,
+    )
+    .join(" ");
+}
+
+function dedupeRepeatedWords(words: string[]) {
+  const midpoint = Math.floor(words.length / 2);
+
+  if (
+    words.length % 2 === 0 &&
+    words.slice(0, midpoint).join(" ") === words.slice(midpoint).join(" ")
+  ) {
+    return words.slice(0, midpoint);
+  }
+
+  return words;
+}
+
+function formatSourceDocumentName(source: RagSource) {
+  const rawName = source.pdf_path?.split("/").pop() ?? source.document_name;
+  const baseName = rawName
+    .replace(/\.pdf$/i, "")
+    .replace(/_[a-f0-9]{12,}$/i, "")
+    .replace(/_[a-f0-9-]{12,}$/i, "");
+  const normalized = baseName.replace(/_/g, "-");
+  const parts = normalized.split("-").filter(Boolean);
+  const year = parts.find((part) => /^(19|20)\d{2}$/.test(part));
+
+  if (year && parts[0] === year && parts.length > 2) {
+    const brand = parts[1];
+    const modelWords = dedupeRepeatedWords(
+      parts.slice(2).filter((part) => part !== year),
+    );
+
+    if (brand && modelWords.length > 0) {
+      return `${titleCase([brand, ...modelWords].join(" "))} ${year}`;
+    }
+  }
+
+  return titleCase(
+    normalized
+      .replace(/(?:^|-)(?:manual|owner|owners|proprietario)(?:-|$)/gi, " ")
+      .replace(/-/g, " ")
+      .trim(),
+  );
+}
+
+function SourceItem({
   index,
   source,
   visualIntent,
@@ -88,30 +145,34 @@ function SourceChip({
   visualIntent: boolean;
 }) {
   const images = visualIntent ? (source.image_paths ?? []) : [];
+  const documentName = formatSourceDocumentName(source);
 
   return (
-    <HoverCard openDelay={120}>
-      <HoverCardTrigger asChild>
-        <Button className="h-8 rounded-lg px-3 text-xs" variant="outline">
+    <div className="space-y-2 rounded-md border border-border bg-background p-3">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted">
           <FileText className="size-3.5" />
-          Fonte {index + 1}
-        </Button>
-      </HoverCardTrigger>
-      <HoverCardContent align="start" className="w-[28rem] max-w-[calc(100vw-2rem)]">
-        <div className="space-y-3">
-          <div>
-            <p className="text-sm font-semibold">{source.document_name}</p>
-            <p className="mt-1 text-xs text-muted-foreground">
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <p className="text-xs font-semibold">Fonte {index + 1}</p>
+            <p className="text-xs text-muted-foreground">
               Páginas {source.page_start}-{source.page_end}
               {source.metadata?.brand ? ` · ${source.metadata.brand}` : ""}
             </p>
           </div>
+          <p
+            className="mt-1 truncate text-xs text-foreground"
+            title={source.document_name}
+          >
+            {documentName}
+          </p>
           {source.section_title && (
-            <p className="rounded-lg bg-muted px-3 py-2 text-xs">
+            <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
               {source.section_title}
             </p>
           )}
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span>Score {source.score.toFixed(3)}</span>
             {images.length > 0 && (
               <span className="inline-flex items-center gap-1">
@@ -120,24 +181,69 @@ function SourceChip({
               </span>
             )}
           </div>
-          {images.length > 0 && (
-            <div className="grid grid-cols-3 gap-2">
-              {images.slice(0, 6).map((imagePath) => (
-                <a
-                  href={getRagImageUrl(imagePath)}
-                  key={imagePath}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  <img
-                    alt="Imagem associada ao chunk"
-                    className="aspect-video rounded-md border border-border bg-background object-contain"
-                    src={getRagImageUrl(imagePath)}
-                  />
-                </a>
-              ))}
-            </div>
-          )}
+        </div>
+      </div>
+
+      {images.length > 0 && (
+        <div className="grid grid-cols-3 gap-2 pl-10">
+          {images.slice(0, 3).map((imagePath) => (
+            <a
+              href={getRagImageUrl(imagePath)}
+              key={imagePath}
+              rel="noreferrer"
+              target="_blank"
+            >
+              <img
+                alt="Imagem associada ao chunk"
+                className="aspect-video rounded-md border border-border bg-card object-contain"
+                src={getRagImageUrl(imagePath)}
+              />
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SourcesDropdown({
+  sources,
+  visualIntent,
+}: {
+  sources: RagSource[];
+  visualIntent: boolean;
+}) {
+  return (
+    <HoverCard openDelay={120}>
+      <HoverCardTrigger asChild>
+        <Button className="h-8 rounded-lg px-3 text-xs" variant="outline">
+          <FileText className="size-3.5" />
+          Fontes
+          <span className="rounded bg-muted px-1.5 py-0.5 text-[0.625rem] leading-none text-muted-foreground">
+            {sources.length}
+          </span>
+          <ChevronRight className="size-3.5" />
+        </Button>
+      </HoverCardTrigger>
+      <HoverCardContent
+        align="start"
+        className="max-h-[min(32rem,calc(100vh-8rem))] w-[32rem] max-w-[calc(100vw-2rem)] overflow-y-auto p-3"
+      >
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-3 px-1 pb-1">
+            <p className="text-sm font-semibold">Fontes recuperadas</p>
+            <p className="text-xs text-muted-foreground">
+              {sources.length} fonte(s)
+            </p>
+          </div>
+          {sources.map((source, index) => (
+            <SourceItem
+              index={index}
+              key={source.chunk_id}
+              source={source}
+              visualIntent={visualIntent}
+            />
+          ))}
         </div>
       </HoverCardContent>
     </HoverCard>
@@ -161,16 +267,7 @@ function MessageSources({
 
   return (
     <div className="mt-4 space-y-3">
-      <div className="flex flex-wrap gap-2">
-        {sources.map((source, index) => (
-          <SourceChip
-            index={index}
-            key={source.chunk_id}
-            source={source}
-            visualIntent={visualIntent}
-          />
-        ))}
-      </div>
+      <SourcesDropdown sources={sources} visualIntent={visualIntent} />
 
       {visualIntent && imagePaths.length > 0 && shouldShowImageGallery(message) && (
         <div className="grid gap-3 sm:grid-cols-2">
