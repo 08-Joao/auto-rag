@@ -13,6 +13,7 @@ import {
   Send,
   Share2,
   Square,
+  Trash2,
   UserCircle,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -27,16 +28,16 @@ import {
 } from "@/components/ui/hover-card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
+import { useSidebarContext } from "@/contexts/sidebar-context";
 import { cn } from "@/lib/utils";
 import {
   createChat,
+  deleteChat,
   getChat,
   getRagImageUrl,
-  listChats,
   streamChatMessage,
   type ChatDetail,
   type ChatMessage,
-  type ChatSummary,
   type RagSource,
 } from "@/services/chats";
 import { getMe, logout, type AuthUser } from "@/services/auth";
@@ -78,7 +79,10 @@ function getImagePaths(sources: RagSource[]) {
 }
 
 function shouldShowImageGallery(message: ChatMessage) {
-  return message.metadata?.visual_intent === true;
+  return (
+    message.metadata?.return_images === true ||
+    message.metadata?.visual_intent === true
+  );
 }
 
 function titleCase(text: string) {
@@ -259,7 +263,7 @@ function MessageSources({
 }) {
   const sources = getSources(message);
   const imagePaths = getImagePaths(sources);
-  const visualIntent = message.metadata?.visual_intent === true;
+  const visualIntent = shouldShowImageGallery(message);
 
   if (isStreaming || sources.length === 0) {
     return null;
@@ -333,14 +337,22 @@ function MarkdownText({ text }: { text: string }) {
 
 export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
   const router = useRouter();
+  const {
+    chats,
+    clearChats,
+    loadChats,
+    removeChat,
+    status: sidebarStatus,
+    upsertChat,
+  } = useSidebarContext();
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [chats, setChats] = useState<ChatSummary[]>([]);
   const [activeChat, setActiveChat] = useState<ChatDetail | null>(null);
   const [prompt, setPrompt] = useState("");
   const [isBooting, setIsBooting] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
   const [shareLabel, setShareLabel] = useState("Compartilhar");
   const abortControllerRef = useRef<AbortController | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
@@ -367,14 +379,13 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
   useEffect(() => {
     let isMounted = true;
 
-    Promise.all([getMe(), listChats()])
+    Promise.all([getMe(), loadChats()])
       .then(async ([currentUser, chatList]) => {
         if (!isMounted) {
           return;
         }
 
         setUser(currentUser);
-        setChats(chatList);
 
         const chatIdToOpen = initialChatId ?? chatList[0]?.id;
 
@@ -400,20 +411,7 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
       isMounted = false;
       abortControllerRef.current?.abort();
     };
-  }, [initialChatId, router]);
-
-  async function refreshChats(nextActiveId?: string) {
-    const chatList = await listChats();
-    setChats(chatList);
-
-    const activeId = nextActiveId ?? activeChat?.id ?? chatList[0]?.id;
-    if (activeId) {
-      const chat = await getChat(activeId);
-      setActiveChat(chat);
-      router.replace(`/c/${chat.id}`);
-      focusPromptInput();
-    }
-  }
+  }, [initialChatId, loadChats, router]);
 
   async function handleCreateChat() {
     abortControllerRef.current?.abort();
@@ -427,12 +425,12 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
     }
 
     const chat = await createChat();
+    upsertChat(chat);
     setActiveChat(chat);
     router.push(`/c/${chat.id}`);
     setPrompt("");
     setIsSidebarOpen(false);
     setIsSending(false);
-    await refreshChats(chat.id);
     focusPromptInput();
   }
 
@@ -454,6 +452,9 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
     }
 
     const chat = activeChat ?? (await createChat());
+    if (!activeChat) {
+      upsertChat(chat);
+    }
     router.replace(`/c/${chat.id}`);
     const userMessage = createOptimisticMessage(content, "USER");
     const assistantMessage = createOptimisticMessage("", "SYSTEM");
@@ -513,6 +514,8 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
                             ...message,
                             metadata: {
                               sources: event.sources,
+                              return_images:
+                                event.returnImages ?? event.visualIntent,
                               visual_intent: event.visualIntent,
                             },
                           }
@@ -540,6 +543,7 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
 
           if (event.type === "done") {
             setActiveChat(event.chat);
+            upsertChat(event.chat);
           }
 
           if (event.type === "error") {
@@ -559,7 +563,6 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
         },
       });
 
-      await refreshChats(chat.id);
     } catch (error) {
       if (!controller.signal.aborted) {
         const message =
@@ -584,7 +587,6 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
         abortControllerRef.current = null;
       }
       setIsSending(false);
-      setActiveChat(await getChat(chat.id));
       focusPromptInput();
     }
   }
@@ -594,8 +596,44 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
     abortControllerRef.current = null;
     setIsSending(false);
     if (activeChat) {
-      setActiveChat(await getChat(activeChat.id));
-      await refreshChats(activeChat.id);
+      const chat = await getChat(activeChat.id);
+      setActiveChat(chat);
+      upsertChat(chat);
+      focusPromptInput();
+    }
+  }
+
+  async function handleDeleteChat(chatId: string) {
+    const chat = chats.find((item) => item.id === chatId);
+    const confirmed = window.confirm(
+      `Excluir "${chat?.title ?? "este chat"}"? Essa acao nao pode ser desfeita.`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    abortControllerRef.current?.abort();
+    setDeletingChatId(chatId);
+
+    try {
+      await deleteChat(chatId);
+      const nextChat = chats.find((item) => item.id !== chatId);
+      removeChat(chatId);
+
+      if (activeChat?.id === chatId) {
+        setActiveChat(null);
+        if (nextChat) {
+          const detail = await getChat(nextChat.id);
+          setActiveChat(detail);
+          router.replace(`/c/${detail.id}`);
+        } else {
+          router.replace("/");
+        }
+      }
+    } finally {
+      setDeletingChatId(null);
+      setIsSending(false);
       focusPromptInput();
     }
   }
@@ -616,6 +654,7 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
     try {
       await logout();
     } finally {
+      clearChats();
       router.replace("/signin");
       router.refresh();
     }
@@ -652,27 +691,42 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
           {chats.map((chat) => {
             const lastMessage = chat.message[0]?.content ?? "Sem mensagens ainda";
             return (
-              <Button
-                className="h-auto w-full justify-start px-3 py-3 text-left"
-                data-active={activeChat?.id === chat.id}
+              <div
+                className="group relative"
                 key={chat.id}
-                onClick={() => handleSelectChat(chat.id)}
-                variant="sidebar"
               >
-                <MessageSquare className="mt-0.5" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium text-primary-foreground">
-                    {chat.title}
+                <Button
+                  className="h-auto w-full justify-start px-3 py-3 pr-12 text-left"
+                  data-active={activeChat?.id === chat.id}
+                  onClick={() => handleSelectChat(chat.id)}
+                  variant="sidebar"
+                >
+                  <MessageSquare className="mt-0.5" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium text-primary-foreground">
+                      {chat.title}
+                    </span>
+                    <span className="mt-1 block truncate text-xs text-sidebar-text-muted">
+                      {lastMessage}
+                    </span>
                   </span>
-                  <span className="mt-1 block truncate text-xs text-sidebar-text-muted">
-                    {lastMessage}
-                  </span>
-                </span>
-              </Button>
+                </Button>
+                <Button
+                  aria-label={`Excluir chat ${chat.title}`}
+                  className="absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2 px-0 text-sidebar-text-muted opacity-100 hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
+                  disabled={deletingChatId === chat.id}
+                  onClick={() => handleDeleteChat(chat.id)}
+                  size="icon"
+                  type="button"
+                  variant="sidebar"
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
             );
           })}
 
-          {!isBooting && chats.length === 0 && (
+          {!isBooting && sidebarStatus !== "loading" && chats.length === 0 && (
             <div className="rounded-lg border border-sidebar-active bg-sidebar-hover p-4 text-sm text-sidebar-text-muted">
               Nenhum chat ainda.
             </div>

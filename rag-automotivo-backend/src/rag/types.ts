@@ -14,6 +14,7 @@ export type RagSource = {
     image_count?: number;
     split_reason?: string;
   };
+  clip_results?: ClipImageResult[];
 };
 
 export type RagRetrievalResult = {
@@ -21,10 +22,18 @@ export type RagRetrievalResult = {
   results: RagSource[];
 };
 
+export type ClipImageResult = {
+  imagePath: string;
+  score: number;
+  page?: number;
+  source?: string;
+  chunkId?: string;
+};
+
 export type RagAnswer = {
   answer: string;
   sources: RagSource[];
-  visualIntent: boolean;
+  returnImages: boolean;
 };
 
 export type RagChatHistoryMessage = {
@@ -33,7 +42,24 @@ export type RagChatHistoryMessage = {
 };
 
 export type RagStreamEvent =
-  | { type: 'sources'; sources: RagSource[]; visualIntent: boolean }
+  | {
+      type: 'sources';
+      sources: RagSource[];
+      returnImages: boolean;
+      visualIntent: boolean;
+    }
   | { type: 'token'; token: string }
-  | { type: 'done'; answer: string; sources: RagSource[]; visualIntent: boolean }
-  | { type: 'error'; message: string; sources: RagSource[]; visualIntent: boolean };
+  | {
+      type: 'done';
+      answer: string;
+      sources: RagSource[];
+      returnImages: boolean;
+      visualIntent: boolean;
+    }
+  | {
+      type: 'error';
+      message: string;
+      sources: RagSource[];
+      returnImages: boolean;
+      visualIntent: boolean;
+    };

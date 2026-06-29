@@ -15,10 +15,18 @@ export type RagSource = {
     image_count?: number;
     split_reason?: string;
   };
+  clip_results?: {
+    imagePath: string;
+    score: number;
+    page?: number;
+    source?: string;
+    chunkId?: string;
+  }[];
 };
 
 export type MessageMetadata = {
   sources?: RagSource[];
+  return_images?: boolean;
   visual_intent?: boolean;
 };
 
@@ -64,6 +72,12 @@ export function getChat(chatId: string) {
   return apiFetch<ChatDetail>(`/chats/${chatId}`);
 }
 
+export function deleteChat(chatId: string) {
+  return apiFetch<{ id: string }>(`/chats/${chatId}`, {
+    method: "DELETE",
+  });
+}
+
 export function sendChatMessage(chatId: string, content: string) {
   return apiFetch<ChatDetail>(`/chats/${chatId}/messages`, {
     method: "POST",
@@ -74,7 +88,12 @@ export function sendChatMessage(chatId: string, content: string) {
 export type ChatStreamEvent =
   | { type: "user_message"; message: ChatMessage }
   | { type: "assistant_start"; messageId: string }
-  | { type: "sources"; sources: RagSource[]; visualIntent: boolean }
+  | {
+      type: "sources";
+      sources: RagSource[];
+      returnImages?: boolean;
+      visualIntent: boolean;
+    }
   | { type: "token"; token: string }
   | { type: "done"; chat: ChatDetail }
   | { type: "error"; message: string };

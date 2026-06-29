@@ -16,7 +16,12 @@ type PersistedUserMessage = Awaited<ReturnType<ChatsService['createUserMessage']
 export type ChatStreamEvent =
   | { type: 'user_message'; message: PersistedUserMessage }
   | { type: 'assistant_start'; messageId: string }
-  | { type: 'sources'; sources: RagSource[]; visualIntent: boolean }
+  | {
+      type: 'sources';
+      sources: RagSource[];
+      returnImages: boolean;
+      visualIntent: boolean;
+    }
   | { type: 'token'; token: string }
   | { type: 'done'; chat: PersistedChat }
   | { type: 'error'; message: string };
@@ -79,6 +84,17 @@ export class ChatsService {
     return chat;
   }
 
+  async remove(id: string, userId: string) {
+    await this.getOwnedChat(id, userId);
+
+    await this.prisma.$transaction([
+      this.prisma.message.deleteMany({ where: { chatId: id } }),
+      this.prisma.chats.delete({ where: { id } }),
+    ]);
+
+    return { id };
+  }
+
   async sendMessage(id: string, userId: string, content: string) {
     const chat = await this.getOwnedChat(id, userId);
     const trimmedContent = content.trim();
@@ -101,7 +117,7 @@ export class ChatsService {
           content: ragAnswer.answer,
           metadata: this.buildMessageMetadata(
             ragAnswer.sources,
-            ragAnswer.visualIntent,
+            ragAnswer.returnImages,
           ),
           sender: MessageSender.SYSTEM,
         },
@@ -137,7 +153,7 @@ export class ChatsService {
 
     let answer = '';
     let sources: RagSource[] = [];
-    let visualIntent = false;
+    let returnImages = false;
 
     for await (const event of this.ragService.streamAnswer(
       trimmedContent,
@@ -150,7 +166,7 @@ export class ChatsService {
 
       if (event.type === 'sources') {
         sources = event.sources;
-        visualIntent = event.visualIntent;
+        returnImages = event.returnImages;
         yield event;
         continue;
       }
@@ -164,8 +180,14 @@ export class ChatsService {
       if (event.type === 'error') {
         answer = event.message;
         sources = event.sources;
-        visualIntent = event.visualIntent;
+        returnImages = event.returnImages;
         yield { type: 'token', token: event.message };
+        continue;
+      }
+
+      if (event.type === 'done') {
+        sources = event.sources;
+        returnImages = event.returnImages;
       }
     }
 
@@ -179,7 +201,7 @@ export class ChatsService {
           id: assistantMessageId,
           chatId: id,
           content: answer.trim(),
-          metadata: this.buildMessageMetadata(sources, visualIntent),
+          metadata: this.buildMessageMetadata(sources, returnImages),
           sender: MessageSender.SYSTEM,
         },
       }),
@@ -278,9 +300,10 @@ export class ChatsService {
     }));
   }
 
-  private buildMessageMetadata(sources: RagSource[], visualIntent: boolean) {
+  private buildMessageMetadata(sources: RagSource[], returnImages: boolean) {
     return {
-      visual_intent: visualIntent,
+      return_images: returnImages,
+      visual_intent: returnImages,
       sources: sources.map((source) => ({
         score: source.score,
         chunk_id: source.chunk_id,
@@ -290,6 +313,7 @@ export class ChatsService {
         page_end: source.page_end,
         section_title: source.section_title,
         image_paths: source.image_paths,
+        clip_results: source.clip_results,
         metadata: source.metadata,
       })),
     };
