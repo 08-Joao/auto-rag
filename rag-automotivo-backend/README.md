@@ -64,7 +64,22 @@ RAG_OUTPUT_DIR=../rag_chunks_output
 RAG_TOP_K=5
 RAG_PYTHON_BIN=../.venv/bin/python
 RAG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+RAG_BM25_TOP_K=40
+RAG_RERANKER_TOP_K=40
+# Opcional, local/cacheado:
+# RAG_RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+RAG_CLIP_THRESHOLD=0.24
+RAG_CLIP_MAX_IMAGES=5
+RAG_CLIP_DEVICE=cpu
 ```
+
+### Pipeline de qualidade implementado
+
+O recuperador combina busca vetorial FAISS, BM25 local, suplementos lexicais de dominio e metadados do veiculo. Quando `RAG_RERANKER_MODEL` e definido, os candidatos tambem passam por um cross-encoder local antes de chegar ao LLM.
+
+A resposta final preserva o contrato antigo (`answer`, `sources`, `returnImages`) e adiciona metadados profissionais: `confidence`, `status`, `reasoning_type`, `vehicle_detected`, `citations`, `images`, `warnings`, `missing_information` e `retrieval_scores` por fonte.
+
+O CLIP continua local e so e chamado quando a pergunta tem intencao visual e existem imagens candidatas. As imagens exibidas passam a vir preferencialmente dos resultados aprovados pelo CLIP.
 
 ## Compile and run the project
 

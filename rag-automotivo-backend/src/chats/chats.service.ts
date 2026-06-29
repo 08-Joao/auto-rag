@@ -8,7 +8,12 @@ import { randomUUID } from 'node:crypto';
 import { MessageSender } from '../generated/prisma/enums';
 import { PrismaService } from '../prisma/prisma.service';
 import { RagService } from '../rag/rag.service';
-import type { RagChatHistoryMessage, RagSource } from '../rag/types';
+import type {
+  RagAnswer,
+  RagChatHistoryMessage,
+  RagConversationState,
+  RagSource,
+} from '../rag/types';
 
 type PersistedChat = Awaited<ReturnType<ChatsService['findOne']>>;
 type PersistedUserMessage = Awaited<ReturnType<ChatsService['createUserMessage']>>;
@@ -99,7 +104,11 @@ export class ChatsService {
     const chat = await this.getOwnedChat(id, userId);
     const trimmedContent = content.trim();
     const history = await this.getRecentHistory(id);
-    const ragAnswer = await this.ragService.answer(trimmedContent, history);
+    const conversationState = await this.getLatestConversationState(id);
+    const ragAnswer = await this.ragService.answer(trimmedContent, history, {
+      chatId: id,
+      conversationState: conversationState ?? undefined,
+    });
     const shouldUpdateTitle = chat._count.message === 0;
 
     await this.prisma.$transaction([
@@ -115,10 +124,7 @@ export class ChatsService {
         data: {
           chatId: id,
           content: ragAnswer.answer,
-          metadata: this.buildMessageMetadata(
-            ragAnswer.sources,
-            ragAnswer.returnImages,
-          ),
+          metadata: this.buildMessageMetadata(ragAnswer),
           sender: MessageSender.SYSTEM,
         },
       }),
@@ -145,6 +151,7 @@ export class ChatsService {
     const trimmedContent = content.trim();
     const shouldUpdateTitle = chat._count.message === 0;
     const history = await this.getRecentHistory(id);
+    const conversationState = await this.getLatestConversationState(id);
     const userMessage = await this.createUserMessage(id, userId, trimmedContent);
     const assistantMessageId = randomUUID();
 
@@ -154,10 +161,15 @@ export class ChatsService {
     let answer = '';
     let sources: RagSource[] = [];
     let returnImages = false;
+    let ragAnswerMetadata: Partial<RagAnswer> = {
+      sources: [],
+      returnImages: false,
+    };
 
     for await (const event of this.ragService.streamAnswer(
       trimmedContent,
       history,
+      { chatId: id, conversationState: conversationState ?? undefined },
       signal,
     )) {
       if (signal?.aborted) {
@@ -167,6 +179,11 @@ export class ChatsService {
       if (event.type === 'sources') {
         sources = event.sources;
         returnImages = event.returnImages;
+        ragAnswerMetadata = {
+          ...ragAnswerMetadata,
+          sources,
+          returnImages,
+        };
         yield event;
         continue;
       }
@@ -181,6 +198,13 @@ export class ChatsService {
         answer = event.message;
         sources = event.sources;
         returnImages = event.returnImages;
+        ragAnswerMetadata = {
+          sources,
+          returnImages,
+          confidence: 0,
+          status: 'error',
+          warnings: [event.message],
+        };
         yield { type: 'token', token: event.message };
         continue;
       }
@@ -188,6 +212,22 @@ export class ChatsService {
       if (event.type === 'done') {
         sources = event.sources;
         returnImages = event.returnImages;
+        ragAnswerMetadata = {
+          answer: event.answer,
+          sources,
+          returnImages,
+          confidence: event.confidence,
+          status: event.status,
+          reasoningType: event.reasoningType,
+          vehicleDetected: event.vehicleDetected,
+          citations: event.citations,
+          images: event.images,
+          warnings: event.warnings,
+          missingInformation: event.missingInformation,
+          conversationState: event.conversationState,
+          resolvedQuery: event.resolvedQuery,
+          isFollowUp: event.isFollowUp,
+        };
       }
     }
 
@@ -201,7 +241,11 @@ export class ChatsService {
           id: assistantMessageId,
           chatId: id,
           content: answer.trim(),
-          metadata: this.buildMessageMetadata(sources, returnImages),
+          metadata: this.buildMessageMetadata({
+            ...ragAnswerMetadata,
+            sources,
+            returnImages,
+          }),
           sender: MessageSender.SYSTEM,
         },
       }),
@@ -300,10 +344,76 @@ export class ChatsService {
     }));
   }
 
-  private buildMessageMetadata(sources: RagSource[], returnImages: boolean) {
+  private async getLatestConversationState(
+    chatId: string,
+  ): Promise<RagConversationState | null> {
+    const messages = await this.prisma.message.findMany({
+      where: { chatId, sender: MessageSender.SYSTEM },
+      orderBy: { createdAt: 'desc' },
+      take: 8,
+      select: { metadata: true },
+    });
+
+    for (const message of messages) {
+      const state = this.extractConversationState(message.metadata);
+      if (state) {
+        return state;
+      }
+    }
+
+    return null;
+  }
+
+  private extractConversationState(
+    metadata: unknown,
+  ): RagConversationState | null {
+    if (!metadata || typeof metadata !== 'object') {
+      return null;
+    }
+
+    const state = (metadata as Record<string, unknown>).conversation_state;
+    if (!state || typeof state !== 'object') {
+      return null;
+    }
+
+    const candidate = state as Partial<RagConversationState>;
+    return {
+      lastUserQuestion: String(candidate.lastUserQuestion ?? ''),
+      pendingQuestion: String(candidate.pendingQuestion ?? ''),
+      resolvedQuery: String(candidate.resolvedQuery ?? ''),
+      intent: String(candidate.intent ?? ''),
+      vehicle:
+        candidate.vehicle && typeof candidate.vehicle === 'object'
+          ? candidate.vehicle
+          : {},
+      missingSlots: Array.isArray(candidate.missingSlots)
+        ? candidate.missingSlots.filter(
+            (slot): slot is string => typeof slot === 'string',
+          )
+        : [],
+      lastAnswerNeededClarification:
+        candidate.lastAnswerNeededClarification === true,
+    };
+  }
+
+  private buildMessageMetadata(ragAnswer: Partial<RagAnswer>) {
+    const sources = ragAnswer.sources ?? [];
+    const returnImages = ragAnswer.returnImages ?? false;
+
     return {
       return_images: returnImages,
       visual_intent: returnImages,
+      confidence: ragAnswer.confidence,
+      status: ragAnswer.status,
+      reasoning_type: ragAnswer.reasoningType,
+      vehicle_detected: ragAnswer.vehicleDetected,
+      citations: ragAnswer.citations ?? [],
+      images: ragAnswer.images ?? [],
+      warnings: ragAnswer.warnings ?? [],
+      missing_information: ragAnswer.missingInformation ?? [],
+      conversation_state: ragAnswer.conversationState,
+      resolved_query: ragAnswer.resolvedQuery,
+      is_follow_up: ragAnswer.isFollowUp,
       sources: sources.map((source) => ({
         score: source.score,
         chunk_id: source.chunk_id,
@@ -315,6 +425,7 @@ export class ChatsService {
         image_paths: source.image_paths,
         clip_results: source.clip_results,
         metadata: source.metadata,
+        retrieval_scores: source.retrieval_scores,
       })),
     };
   }

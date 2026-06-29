@@ -32,6 +32,9 @@ export class RagRetrieverService {
   private readonly lexicalSupplements = Number(
     process.env.RAG_LEXICAL_SUPPLEMENTS ?? 3,
   );
+  private readonly bm25TopK = Number(process.env.RAG_BM25_TOP_K ?? 40);
+  private readonly rerankerModel = process.env.RAG_RERANKER_MODEL ?? '';
+  private readonly rerankerTopK = Number(process.env.RAG_RERANKER_TOP_K ?? 40);
 
   private resolveDefaultPython(): string {
     const localVenvPython = resolve(
@@ -57,7 +60,15 @@ export class RagRetrieverService {
       String(this.candidateK),
       '--lexical-supplements',
       String(this.lexicalSupplements),
+      '--bm25-top-k',
+      String(this.bm25TopK),
+      '--reranker-top-k',
+      String(this.rerankerTopK),
     ];
+
+    if (this.rerankerModel.trim()) {
+      args.push('--reranker-model', this.rerankerModel.trim());
+    }
 
     try {
       const { stdout, stderr } = await execFileAsync(this.pythonBin, args, {
@@ -83,7 +94,17 @@ export class RagRetrieverService {
 
     return results
       .map((source, index) => ({
-        source,
+        source: {
+          ...source,
+          score: Math.max(0, Math.min(1, source.score + this.relevanceBonus(source, query))),
+          retrieval_scores: {
+            ...source.retrieval_scores,
+            final: Math.max(
+              0,
+              Math.min(1, source.score + this.relevanceBonus(source, query)),
+            ),
+          },
+        },
         index,
         score: source.score + this.relevanceBonus(source, query),
       }))
@@ -165,6 +186,8 @@ export class RagRetrieverService {
 
     if (matchesRequestedYear) {
       bonus += 0.08;
+    } else if (years.length > 0) {
+      bonus -= 0.2;
     }
 
     if (isWheelSizeQuery) {
@@ -187,7 +210,13 @@ export class RagRetrieverService {
 
     if (isVisualQuery) {
       if ((source.image_paths?.length ?? 0) > 0) {
-        bonus += isOilLocationQuery ? 0.42 : 0.22;
+        const yearAwareImageBonus =
+          years.length > 0 && !matchesRequestedYear
+            ? 0.04
+            : isOilLocationQuery
+              ? 0.42
+              : 0.22;
+        bonus += yearAwareImageBonus;
       }
       if (
         text.includes('fig.') ||

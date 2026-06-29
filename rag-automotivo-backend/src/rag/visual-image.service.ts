@@ -35,7 +35,7 @@ export class VisualImageService {
     question: string,
     sources: RagSource[],
   ): Promise<ClipImageResult[]> {
-    const candidates = this.buildCandidates(sources);
+    const candidates = this.buildCandidates(question, sources);
     if (candidates.length === 0) {
       return [];
     }
@@ -133,11 +133,22 @@ export class VisualImageService {
     return existsSync(localVenvPython) ? localVenvPython : 'python3';
   }
 
-  private buildCandidates(sources: RagSource[]): ClipCandidate[] {
+  private buildCandidates(question: string, sources: RagSource[]): ClipCandidate[] {
     const candidates: ClipCandidate[] = [];
     const seenPaths = new Set<string>();
+    const requestedYears = new Set(
+      question.match(/\b(?:19|20)\d{2}\b/g) ?? [],
+    );
 
     for (const source of sources) {
+      if (
+        requestedYears.size > 0 &&
+        source.metadata.vehicle_year &&
+        !requestedYears.has(String(source.metadata.vehicle_year))
+      ) {
+        continue;
+      }
+
       for (const imagePath of source.image_paths) {
         if (seenPaths.has(imagePath)) {
           continue;

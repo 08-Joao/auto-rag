@@ -3,14 +3,35 @@ import { StringOutputParser } from '@langchain/core/output_parsers';
 import { PromptTemplate } from '@langchain/core/prompts';
 
 import { OllamaService } from './ollama.service';
+import { QueryRewriterService } from './query-rewriter.service';
 import { RagRetrieverService } from './rag-retriever.service';
 import { VisualImageService } from './visual-image.service';
 import type {
+  ClipImageResult,
   RagAnswer,
+  RagAnswerOptions,
+  RagCitation,
   RagChatHistoryMessage,
   RagSource,
   RagStreamEvent,
+  RagVehicleDetected,
+  RagQueryRewriteResult,
 } from './types';
+
+type QueryIntent = {
+  visualRequired: boolean;
+  reasoningType: string;
+  requiresVehicle: boolean;
+  specificationOnly: boolean;
+};
+
+type StructuredAnswer = {
+  answer: string;
+  returnImages: boolean;
+  citations: RagCitation[];
+  warnings: string[];
+  missingInformation: string[];
+};
 
 @Injectable()
 export class RagService {
@@ -34,6 +55,8 @@ export class RagService {
       'No final, quando fizer sentido, ofereca 2 ou 3 proximas acoes curtas em uma linha iniciada por "Posso ajudar tambem com:".',
       'Quando houver fonte util, cite documento e paginas no corpo da resposta.',
       'Se imagens forem relevantes, diga de forma breve que ha imagens ou diagramas associados. Nao liste caminhos de arquivos na resposta.',
+      'Cada afirmacao tecnica importante deve estar apoiada em uma das fontes numeradas. Se nao houver fonte suficiente, responda que nao encontrou informacoes suficientes nos manuais disponiveis.',
+      'Evite palavras como provavelmente, talvez, em geral ou costuma quando a pergunta exigir dado oficial do manual.',
       '',
       'Voce tambem deve decidir a flag booleana returnImages.',
       'Use returnImages=true quando a pergunta envolver localizacao visual, identificacao de peca, componente, reservatorio, botao, painel, tampa, compartimento, posicao fisica ou instrucao visual.',
@@ -41,7 +64,7 @@ export class RagService {
       'Use returnImages=false se o contexto recuperado informar que nao ha imagens candidatas.',
       '',
       'Responda exclusivamente com JSON valido, sem markdown e sem texto fora do JSON, neste formato:',
-      '{{"answer":"Resposta final humanizada para o usuario.","returnImages":true}}',
+      '{{"answer":"Resposta final humanizada para o usuario com fontes no texto.","returnImages":true,"citations":[{{"claim":"afirmacao suportada","sourceIndex":0,"page":253,"document":"Manual.pdf","quote":"trecho curto"}}],"warnings":[],"missingInformation":[]}}',
       'Nao mostre raciocinio interno.',
       '',
       'Historico recente da conversa:',
@@ -56,6 +79,7 @@ export class RagService {
   );
 
   constructor(
+    private readonly queryRewriter: QueryRewriterService,
     private readonly retriever: RagRetrieverService,
     private readonly ollama: OllamaService,
     private readonly visualImages: VisualImageService,
@@ -64,6 +88,7 @@ export class RagService {
   async answer(
     question: string,
     history: RagChatHistoryMessage[] = [],
+    options: RagAnswerOptions = {},
   ): Promise<RagAnswer> {
     const guardedQuestion = this.guardQuestion(question);
     if (!guardedQuestion.cleanedQuestion) {
@@ -76,20 +101,79 @@ export class RagService {
     }
 
     const safeHistory = this.sanitizeHistory(history);
-    const clarification = this.getVehicleClarification(
+    const rewrite = this.queryRewriter.rewrite(
       guardedQuestion.cleanedQuestion,
       safeHistory,
+      options.conversationState,
     );
+    this.logRewrite(options.chatId, rewrite, rewrite.resolvedQuery);
+
+    const resolvedQuestion = rewrite.resolvedQuery;
+    const intent = this.classifyIntent(resolvedQuestion);
+    const vehicleDetected = this.detectVehicleFromRewrite(rewrite);
+    const clarification = this.getRewriteClarification(rewrite);
+    if (!clarification) {
+      rewrite.state.pendingQuestion = '';
+      rewrite.state.lastAnswerNeededClarification = false;
+      rewrite.state.missingSlots = [];
+    }
+
     if (clarification) {
-      return { answer: clarification, sources: [], returnImages: false };
+      return {
+        answer: clarification,
+        sources: [],
+        returnImages: false,
+        confidence: 0,
+        status: 'needs_clarification',
+        reasoningType: intent.reasoningType,
+        vehicleDetected,
+        citations: [],
+        images: [],
+        warnings: [],
+        missingInformation: rewrite.missingSlots,
+        conversationState: rewrite.state,
+        resolvedQuery: resolvedQuestion,
+        isFollowUp: rewrite.isFollowUp,
+      };
+    }
+
+    const legacyClarification = this.getVehicleClarification(
+      resolvedQuestion,
+      safeHistory,
+    );
+    if (legacyClarification) {
+      rewrite.state.pendingQuestion = resolvedQuestion;
+      rewrite.state.lastAnswerNeededClarification = true;
+      rewrite.state.missingSlots = ['vehicle'];
+      return {
+        answer: legacyClarification,
+        sources: [],
+        returnImages: false,
+        confidence: 0,
+        status: 'needs_clarification',
+        reasoningType: intent.reasoningType,
+        vehicleDetected,
+        citations: [],
+        images: [],
+        warnings: [],
+        missingInformation: rewrite.state.missingSlots,
+        conversationState: rewrite.state,
+        resolvedQuery: resolvedQuestion,
+        isFollowUp: rewrite.isFollowUp,
+      };
     }
 
     const retrieval = await this.safeRetrieve(
-      guardedQuestion.cleanedQuestion,
+      resolvedQuestion,
       safeHistory,
     );
     if ('answer' in retrieval) {
-      return retrieval;
+      return {
+        ...retrieval,
+        conversationState: rewrite.state,
+        resolvedQuery: resolvedQuestion,
+        isFollowUp: rewrite.isFollowUp,
+      };
     }
 
     const candidateSources = retrieval.sources;
@@ -100,36 +184,108 @@ export class RagService {
           'Nao encontrei trechos relevantes nos manuais indexados para responder com seguranca. Tente reformular a pergunta ou gere novamente o indice RAG.',
         sources: [],
         returnImages: false,
+        confidence: 0,
+        status: 'insufficient_context',
+        reasoningType: intent.reasoningType,
+        vehicleDetected,
+        citations: [],
+        images: [],
+        warnings: ['Nao houve contexto recuperado dos manuais.'],
+        missingInformation: ['contexto oficial suficiente'],
+        conversationState: rewrite.state,
+        resolvedQuery: resolvedQuestion,
+        isFollowUp: rewrite.isFollowUp,
       };
     }
 
     try {
+      const confidenceBeforeAnswer = this.calculateConfidence(
+        candidateSources,
+        [],
+        intent,
+      );
+      if (confidenceBeforeAnswer < this.minimumConfidenceForAnswer(intent)) {
+        return this.buildInsufficientContextAnswer(
+          candidateSources,
+          intent,
+          vehicleDetected,
+          confidenceBeforeAnswer,
+          rewrite,
+        );
+      }
+
       const structuredAnswer = await this.generateStructuredAnswer(
-        guardedQuestion.cleanedQuestion,
+        resolvedQuestion,
         safeHistory,
         candidateSources,
       );
-      const returnImages =
-        structuredAnswer.returnImages &&
-        candidateSources.some((source) => source.image_paths.length > 0);
+      const returnImages = this.shouldReturnImages(
+        intent,
+        structuredAnswer.returnImages,
+        candidateSources,
+      );
       const sources = await this.prepareSourcesForFinalResponse(
-        guardedQuestion.cleanedQuestion,
+        resolvedQuestion,
         candidateSources,
         returnImages,
       );
+      const images = this.collectImages(sources);
+      const confidence = this.calculateConfidence(sources, images, intent);
+      const citations = this.buildCitations(
+        structuredAnswer.citations,
+        sources,
+      );
+      const warnings = this.buildWarnings(
+        structuredAnswer.answer,
+        sources,
+        confidence,
+        structuredAnswer.warnings,
+      );
 
-      return { answer: structuredAnswer.answer, sources, returnImages };
+      return {
+        answer: this.ensureAnswerHasSourceFooter(
+          structuredAnswer.answer,
+          sources,
+          confidence,
+        ),
+        sources,
+        returnImages: returnImages && images.length > 0,
+        confidence,
+        status: confidence >= this.minimumConfidenceForAnswer(intent)
+          ? 'answered'
+          : 'insufficient_context',
+        reasoningType: intent.reasoningType,
+        vehicleDetected,
+        citations,
+        images,
+        warnings,
+        missingInformation: structuredAnswer.missingInformation,
+        conversationState: rewrite.state,
+        resolvedQuery: resolvedQuestion,
+        isFollowUp: rewrite.isFollowUp,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Falha ao gerar resposta com Ollama: ${message}`);
       return {
         answer: this.buildFallbackAnswer(
-          guardedQuestion.cleanedQuestion,
+          resolvedQuestion,
           this.visualImages.stripImages(candidateSources),
           message,
         ),
         sources: this.visualImages.stripImages(candidateSources),
         returnImages: false,
+        confidence: 0,
+        status: 'error',
+        reasoningType: intent.reasoningType,
+        vehicleDetected,
+        citations: [],
+        images: [],
+        warnings: [message],
+        missingInformation: [],
+        conversationState: rewrite.state,
+        resolvedQuery: resolvedQuestion,
+        isFollowUp: rewrite.isFollowUp,
       };
     }
   }
@@ -137,6 +293,7 @@ export class RagService {
   async *streamAnswer(
     question: string,
     history: RagChatHistoryMessage[] = [],
+    options: RagAnswerOptions = {},
     signal?: AbortSignal,
   ): AsyncGenerator<RagStreamEvent> {
     const guardedQuestion = this.guardQuestion(question);
@@ -161,10 +318,23 @@ export class RagService {
     }
 
     const safeHistory = this.sanitizeHistory(history);
-    const clarification = this.getVehicleClarification(
+    const rewrite = this.queryRewriter.rewrite(
       guardedQuestion.cleanedQuestion,
       safeHistory,
+      options.conversationState,
     );
+    this.logRewrite(options.chatId, rewrite, rewrite.resolvedQuery);
+
+    const resolvedQuestion = rewrite.resolvedQuery;
+    const intent = this.classifyIntent(resolvedQuestion);
+    const vehicleDetected = this.detectVehicleFromRewrite(rewrite);
+    const clarification = this.getRewriteClarification(rewrite);
+    if (!clarification) {
+      rewrite.state.pendingQuestion = '';
+      rewrite.state.lastAnswerNeededClarification = false;
+      rewrite.state.missingSlots = [];
+    }
+
     if (clarification) {
       yield {
         type: 'sources',
@@ -179,12 +349,59 @@ export class RagService {
         sources: [],
         returnImages: false,
         visualIntent: false,
+        confidence: 0,
+        status: 'needs_clarification',
+        reasoningType: intent.reasoningType,
+        vehicleDetected,
+        citations: [],
+        images: [],
+        warnings: [],
+        missingInformation: rewrite.missingSlots,
+        conversationState: rewrite.state,
+        resolvedQuery: resolvedQuestion,
+        isFollowUp: rewrite.isFollowUp,
+      };
+      return;
+    }
+
+    const legacyClarification = this.getVehicleClarification(
+      resolvedQuestion,
+      safeHistory,
+    );
+    if (legacyClarification) {
+      rewrite.state.pendingQuestion = resolvedQuestion;
+      rewrite.state.lastAnswerNeededClarification = true;
+      rewrite.state.missingSlots = ['vehicle'];
+      yield {
+        type: 'sources',
+        sources: [],
+        returnImages: false,
+        visualIntent: false,
+      };
+      yield { type: 'token', token: legacyClarification };
+      yield {
+        type: 'done',
+        answer: legacyClarification,
+        sources: [],
+        returnImages: false,
+        visualIntent: false,
+        confidence: 0,
+        status: 'needs_clarification',
+        reasoningType: intent.reasoningType,
+        vehicleDetected,
+        citations: [],
+        images: [],
+        warnings: [],
+        missingInformation: rewrite.state.missingSlots,
+        conversationState: rewrite.state,
+        resolvedQuery: resolvedQuestion,
+        isFollowUp: rewrite.isFollowUp,
       };
       return;
     }
 
     const retrieval = await this.safeRetrieve(
-      guardedQuestion.cleanedQuestion,
+      resolvedQuestion,
       safeHistory,
     );
     if ('answer' in retrieval) {
@@ -201,6 +418,9 @@ export class RagService {
         sources: retrieval.sources,
         returnImages: retrieval.returnImages,
         visualIntent: retrieval.returnImages,
+        conversationState: rewrite.state,
+        resolvedQuery: resolvedQuestion,
+        isFollowUp: rewrite.isFollowUp,
       };
       return;
     }
@@ -223,13 +443,59 @@ export class RagService {
         sources: [],
         returnImages: false,
         visualIntent: false,
+        confidence: 0,
+        status: 'insufficient_context',
+        reasoningType: intent.reasoningType,
+        vehicleDetected,
+        citations: [],
+        images: [],
+        warnings: ['Nao houve contexto recuperado dos manuais.'],
+        missingInformation: ['contexto oficial suficiente'],
+        conversationState: rewrite.state,
+        resolvedQuery: resolvedQuestion,
+        isFollowUp: rewrite.isFollowUp,
       };
       return;
     }
 
     try {
+      const confidenceBeforeAnswer = this.calculateConfidence(
+        candidateSources,
+        [],
+        intent,
+      );
+      if (confidenceBeforeAnswer < this.minimumConfidenceForAnswer(intent)) {
+        const insufficient = this.buildInsufficientContextAnswer(
+          candidateSources,
+          intent,
+          vehicleDetected,
+          confidenceBeforeAnswer,
+          rewrite,
+        );
+        yield { type: 'token', token: insufficient.answer };
+        yield {
+          type: 'done',
+          answer: insufficient.answer,
+          sources: insufficient.sources,
+          returnImages: false,
+          visualIntent: false,
+          confidence: insufficient.confidence,
+          status: insufficient.status,
+          reasoningType: insufficient.reasoningType,
+          vehicleDetected,
+          citations: insufficient.citations,
+          images: insufficient.images,
+          warnings: insufficient.warnings,
+          missingInformation: insufficient.missingInformation,
+          conversationState: insufficient.conversationState,
+          resolvedQuery: insufficient.resolvedQuery,
+          isFollowUp: insufficient.isFollowUp,
+        };
+        return;
+      }
+
       const structuredAnswer = await this.generateStructuredAnswer(
-        guardedQuestion.cleanedQuestion,
+        resolvedQuestion,
         safeHistory,
         candidateSources,
       );
@@ -237,23 +503,55 @@ export class RagService {
         return;
       }
 
-      yield { type: 'token', token: structuredAnswer.answer };
-
-      const returnImages =
-        structuredAnswer.returnImages &&
-        candidateSources.some((source) => source.image_paths.length > 0);
+      const returnImages = this.shouldReturnImages(
+        intent,
+        structuredAnswer.returnImages,
+        candidateSources,
+      );
       const sources = await this.prepareSourcesForFinalResponse(
-        guardedQuestion.cleanedQuestion,
+        resolvedQuestion,
         candidateSources,
         returnImages,
       );
+      const images = this.collectImages(sources);
+      const confidence = this.calculateConfidence(sources, images, intent);
+      const citations = this.buildCitations(
+        structuredAnswer.citations,
+        sources,
+      );
+      const warnings = this.buildWarnings(
+        structuredAnswer.answer,
+        sources,
+        confidence,
+        structuredAnswer.warnings,
+      );
+      const finalAnswer = this.ensureAnswerHasSourceFooter(
+        structuredAnswer.answer,
+        sources,
+        confidence,
+      );
+
+      yield { type: 'token', token: finalAnswer };
 
       yield {
         type: 'done',
-        answer: structuredAnswer.answer,
+        answer: finalAnswer,
         sources,
-        returnImages,
-        visualIntent: returnImages,
+        returnImages: returnImages && images.length > 0,
+        visualIntent: returnImages && images.length > 0,
+        confidence,
+        status: confidence >= this.minimumConfidenceForAnswer(intent)
+          ? 'answered'
+          : 'insufficient_context',
+        reasoningType: intent.reasoningType,
+        vehicleDetected,
+        citations,
+        images,
+        warnings,
+        missingInformation: structuredAnswer.missingInformation,
+        conversationState: rewrite.state,
+        resolvedQuery: resolvedQuestion,
+        isFollowUp: rewrite.isFollowUp,
       };
     } catch (error) {
       if (signal?.aborted) {
@@ -305,7 +603,7 @@ export class RagService {
     question: string,
     history: RagChatHistoryMessage[],
     sources: RagSource[],
-  ): Promise<{ answer: string; returnImages: boolean }> {
+  ): Promise<StructuredAnswer> {
     const chain = this.answerPrompt
       .pipe(this.ollama.getModel())
       .pipe(this.outputParser);
@@ -323,7 +621,7 @@ export class RagService {
     rawAnswer: string,
     question: string,
     sources: RagSource[],
-  ): { answer: string; returnImages: boolean } {
+  ): StructuredAnswer {
     const cleanedAnswer = this.ollama.cleanOutput(rawAnswer);
     const jsonText = this.extractJsonObject(cleanedAnswer);
 
@@ -331,6 +629,9 @@ export class RagService {
       const parsed = JSON.parse(jsonText) as {
         answer?: unknown;
         returnImages?: unknown;
+        citations?: unknown;
+        warnings?: unknown;
+        missingInformation?: unknown;
       };
       const answer =
         typeof parsed.answer === 'string' && parsed.answer.trim()
@@ -345,6 +646,9 @@ export class RagService {
         answer,
         returnImages:
           returnImages && sources.some((source) => source.image_paths.length > 0),
+        citations: this.parseCitations(parsed.citations),
+        warnings: this.parseStringArray(parsed.warnings),
+        missingInformation: this.parseStringArray(parsed.missingInformation),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -356,6 +660,9 @@ export class RagService {
         returnImages:
           this.getVisualIntent(question) &&
           sources.some((source) => source.image_paths.length > 0),
+        citations: [],
+        warnings: [],
+        missingInformation: [],
       };
     }
   }
@@ -399,6 +706,408 @@ export class RagService {
     return this.visualImages.filterSourcesByClipResults(sources, clipResults);
   }
 
+  private classifyIntent(question: string): QueryIntent {
+    const text = question.toLowerCase();
+    const specificationOnly = [
+      'qual oleo',
+      'qual óleo',
+      'oleo recomendado',
+      'óleo recomendado',
+      'viscosidade',
+      'capacidade',
+      'calibragem',
+      'pressao',
+      'pressão',
+      'torque',
+      'norma',
+      'codigo',
+      'código',
+      'qual aro',
+      'tamanho do aro',
+      'tamanho da roda',
+    ].some((term) => text.includes(term));
+    const visualRequired = this.getVisualIntent(question);
+    const requiresVehicle = [
+      'oleo',
+      'óleo',
+      'fluido',
+      'pneu',
+      'aro',
+      'roda',
+      'pressao',
+      'pressão',
+      'fusivel',
+      'fusível',
+      'torque',
+      'capacidade',
+      'reservatorio',
+      'reservatório',
+    ].some((term) => text.includes(term));
+
+    let reasoningType = 'manual_lookup';
+    if (visualRequired) {
+      reasoningType = 'visual_location';
+    } else if (specificationOnly) {
+      reasoningType = 'specification_lookup';
+    } else if (
+      ['como trocar', 'como verificar', 'procedimento', 'passo a passo'].some(
+        (term) => text.includes(term),
+      )
+    ) {
+      reasoningType = 'procedure_lookup';
+    }
+
+    return { visualRequired, reasoningType, requiresVehicle, specificationOnly };
+  }
+
+  private getRewriteClarification(rewrite: RagQueryRewriteResult): string | null {
+    if (rewrite.missingSlots.length === 0) {
+      return null;
+    }
+
+    const labels: Record<string, string> = {
+      brand: 'marca',
+      model: 'modelo',
+      year: 'ano',
+      engine: 'motor',
+      version: 'versao',
+      vehicle: 'veiculo',
+    };
+    const missing = rewrite.missingSlots
+      .map((slot) => labels[slot] ?? slot)
+      .join(', ');
+
+    if (rewrite.missingSlots.length === 1 && rewrite.missingSlots[0] === 'year') {
+      return [
+        'Para responder com seguranca, preciso identificar o ano do veiculo.',
+        'Informe o ano e, se souber, motor/versao. Exemplo: "Audi A4 2010 2.0".',
+      ].join('\n');
+    }
+
+    return [
+      'Para responder com seguranca, preciso identificar melhor o veiculo.',
+      `Faltam: ${missing}. Informe marca, modelo, ano e, se souber, motor/versao. Exemplo: "Audi A4 2010 2.0".`,
+    ].join('\n');
+  }
+
+  private detectVehicleFromRewrite(
+    rewrite: RagQueryRewriteResult,
+  ): RagVehicleDetected {
+    const certainty =
+      (rewrite.vehicle.brand ? 0.3 : 0) +
+      (rewrite.vehicle.model ? 0.25 : 0) +
+      (rewrite.vehicle.year ? 0.35 : 0) +
+      (rewrite.vehicle.engine ? 0.1 : 0);
+
+    return {
+      make: rewrite.vehicle.brand,
+      model: rewrite.vehicle.model,
+      year: rewrite.vehicle.year ? Number(rewrite.vehicle.year) : undefined,
+      engine: rewrite.vehicle.engine,
+      certainty: Math.min(1, certainty),
+    };
+  }
+
+  private logRewrite(
+    chatId: string | undefined,
+    rewrite: RagQueryRewriteResult,
+    ragQueryUsed: string,
+  ): void {
+    this.logger.debug(
+      JSON.stringify({
+        chatId: chatId ?? '',
+        rawMessage: rewrite.rawMessage,
+        pendingQuestion: rewrite.pendingQuestion,
+        resolvedQuery: rewrite.resolvedQuery,
+        isFollowUp: rewrite.isFollowUp,
+        intent: rewrite.intent,
+        vehicle: rewrite.vehicle,
+        missingSlots: rewrite.missingSlots,
+        ragQueryUsed,
+      }),
+    );
+  }
+
+  private shouldReturnImages(
+    intent: QueryIntent,
+    modelWantsImages: boolean,
+    sources: RagSource[],
+  ): boolean {
+    if (!sources.some((source) => source.image_paths.length > 0)) {
+      return false;
+    }
+
+    if (intent.specificationOnly) {
+      return false;
+    }
+
+    return intent.visualRequired || modelWantsImages;
+  }
+
+  private detectVehicle(
+    question: string,
+    history: RagChatHistoryMessage[],
+  ): RagVehicleDetected {
+    const text = `${this.buildHistoryText(history)}\n${question}`.toLowerCase();
+    const brands = [
+      'audi',
+      'bmw',
+      'byd',
+      'chevrolet',
+      'citroen',
+      'fiat',
+      'ford',
+      'honda',
+      'hyundai',
+      'jeep',
+      'kia',
+      'nissan',
+      'peugeot',
+      'renault',
+      'toyota',
+      'volkswagen',
+      'vw',
+    ];
+    const make = brands.find((brand) => text.includes(brand));
+    const year = text.match(/\b(19|20)\d{2}\b/)?.[0];
+    const engine = text.match(/\b\d\.\d\s*(?:tfsi|tsi|tdi|flex|turbo)?\b/i)?.[0];
+    const modelMatch = text.match(
+      /\b(?:audi|bmw|chevrolet|fiat|ford|honda|toyota|volkswagen|vw)\s+([a-z0-9-]{1,12}(?:\s+[a-z0-9-]{1,12})?)/i,
+    );
+
+    const certainty =
+      (make ? 0.35 : 0) + (year ? 0.35 : 0) + (modelMatch ? 0.2 : 0) + (engine ? 0.1 : 0);
+
+    return {
+      make: make === 'vw' ? 'volkswagen' : make,
+      model: modelMatch?.[1]?.trim(),
+      year: year ? Number(year) : undefined,
+      engine: engine?.trim(),
+      certainty: Math.min(1, certainty),
+    };
+  }
+
+  private calculateConfidence(
+    sources: RagSource[],
+    images: ClipImageResult[],
+    intent: QueryIntent,
+  ): number {
+    if (sources.length === 0) {
+      return 0;
+    }
+
+    const topScores = sources.slice(0, 5);
+    const best = topScores[0];
+    const avgFinal =
+      topScores.reduce((sum, source) => sum + this.getSourceFinalScore(source), 0) /
+      topScores.length;
+    const bestScore = this.getSourceFinalScore(best);
+    const metadataScore =
+      topScores.reduce(
+        (sum, source) => sum + (source.retrieval_scores?.metadata ?? 0),
+        0,
+      ) / topScores.length;
+    const rerankerScore =
+      topScores.reduce(
+        (sum, source) =>
+          sum +
+          (source.retrieval_scores?.reranker ??
+            source.retrieval_scores?.final ??
+            source.score),
+        0,
+      ) / topScores.length;
+    const documentConsensus =
+      new Set(topScores.map((source) => source.document_name)).size <= 2
+        ? 0.85
+        : 0.65;
+    const evidenceCoverage = Math.min(1, sources.length / 4);
+    const citationQuality = topScores.some((source) => source.page_start > 0)
+      ? 0.9
+      : 0.45;
+    const visualScore =
+      intent.visualRequired && images.length > 0
+        ? Math.min(1, images[0].score / 0.34)
+        : intent.visualRequired
+          ? 0.25
+          : 0.8;
+
+    const confidence =
+      0.28 * rerankerScore +
+      0.24 * bestScore +
+      0.16 * avgFinal +
+      0.12 * metadataScore +
+      0.1 * documentConsensus +
+      0.06 * evidenceCoverage +
+      0.04 * citationQuality +
+      (intent.visualRequired ? 0.08 * visualScore : 0);
+
+    return Number(Math.max(0, Math.min(0.99, confidence)).toFixed(2));
+  }
+
+  private minimumConfidenceForAnswer(intent: QueryIntent): number {
+    return intent.visualRequired ? 0.42 : 0.38;
+  }
+
+  private getSourceFinalScore(source: RagSource): number {
+    return Math.max(
+      0,
+      Math.min(
+        1,
+        source.retrieval_scores?.final ??
+          source.retrieval_scores?.reranker ??
+          source.score,
+      ),
+    );
+  }
+
+  private buildInsufficientContextAnswer(
+    sources: RagSource[],
+    intent: QueryIntent,
+    vehicleDetected: RagVehicleDetected,
+    confidence: number,
+    rewrite?: RagQueryRewriteResult,
+  ): RagAnswer {
+    return {
+      answer:
+        'Nao encontrei informacoes suficientes nos manuais disponiveis para responder com seguranca. Posso tentar novamente se voce informar mais detalhes do veiculo ou se o indice for regenerado com o manual correto.',
+      sources: this.visualImages.stripImages(sources.slice(0, 5)),
+      returnImages: false,
+      confidence,
+      status: 'insufficient_context',
+      reasoningType: intent.reasoningType,
+      vehicleDetected,
+      citations: [],
+      images: [],
+      warnings: ['Confianca abaixo do limite minimo para resposta fundamentada.'],
+      missingInformation: ['evidencia oficial suficiente nos manuais indexados'],
+      conversationState: rewrite?.state,
+      resolvedQuery: rewrite?.resolvedQuery,
+      isFollowUp: rewrite?.isFollowUp,
+    };
+  }
+
+  private collectImages(sources: RagSource[]): ClipImageResult[] {
+    const byPath = new Map<string, ClipImageResult>();
+    for (const source of sources) {
+      for (const result of source.clip_results ?? []) {
+        byPath.set(result.imagePath, result);
+      }
+    }
+
+    return [...byPath.values()].sort((left, right) => right.score - left.score);
+  }
+
+  private parseStringArray(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 8);
+  }
+
+  private parseCitations(value: unknown): RagCitation[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item) => {
+        if (!item || typeof item !== 'object') {
+          return null;
+        }
+        const citation = item as Record<string, unknown>;
+        const sourceIndex = Number(citation.sourceIndex);
+        const page = Number(citation.page);
+        const claim = typeof citation.claim === 'string' ? citation.claim.trim() : '';
+        const document =
+          typeof citation.document === 'string' ? citation.document.trim() : '';
+        const quote = typeof citation.quote === 'string' ? citation.quote.trim() : undefined;
+
+        if (!claim || !Number.isInteger(sourceIndex) || !Number.isFinite(page)) {
+          return null;
+        }
+
+        const result: RagCitation = { claim, sourceIndex, page, document };
+        if (quote) {
+          result.quote = quote;
+        }
+
+        return result;
+      })
+      .filter((item): item is RagCitation => Boolean(item))
+      .slice(0, 12);
+  }
+
+  private buildCitations(
+    modelCitations: RagCitation[],
+    sources: RagSource[],
+  ): RagCitation[] {
+    const citations = modelCitations
+      .filter((citation) => citation.sourceIndex >= 0 && citation.sourceIndex < sources.length)
+      .map((citation) => ({
+        ...citation,
+        document: citation.document || sources[citation.sourceIndex].document_name,
+        page: citation.page || sources[citation.sourceIndex].page_start,
+        quote: citation.quote
+          ? this.truncate(citation.quote, 240)
+          : this.truncate(sources[citation.sourceIndex].text, 240),
+      }));
+
+    if (citations.length > 0) {
+      return citations;
+    }
+
+    return sources.slice(0, 3).map((source, index) => ({
+      claim: 'Trecho usado como evidencia para a resposta.',
+      sourceIndex: index,
+      page: source.page_start,
+      document: source.document_name,
+      quote: this.truncate(source.text.replace(/\s+/g, ' '), 240),
+    }));
+  }
+
+  private buildWarnings(
+    answer: string,
+    sources: RagSource[],
+    confidence: number,
+    modelWarnings: string[],
+  ): string[] {
+    const warnings = new Set(modelWarnings);
+    if (confidence < 0.65) {
+      warnings.add('Resposta com confianca moderada; confira as fontes exibidas.');
+    }
+    if (!/manual|fonte|pagina|página|paginas|páginas/i.test(answer)) {
+      warnings.add('A resposta gerada nao citou fonte explicitamente; fontes foram anexadas nos metadados.');
+    }
+    if (sources.length < 2) {
+      warnings.add('Poucas fontes recuperadas para consenso.');
+    }
+
+    return [...warnings].slice(0, 8);
+  }
+
+  private ensureAnswerHasSourceFooter(
+    answer: string,
+    sources: RagSource[],
+    confidence: number,
+  ): string {
+    if (/fonte|manual|pagina|página|paginas|páginas/i.test(answer)) {
+      return answer;
+    }
+
+    const first = sources[0];
+    return [
+      answer.trim(),
+      '',
+      `Fonte: ${first.document_name}, paginas ${first.page_start}-${first.page_end}.`,
+      `Confianca: ${Math.round(confidence * 100)}%.`,
+    ].join('\n');
+  }
+
   private buildContext(sources: RagSource[]): string {
     const specificationSummary = this.buildSpecificationSummary(sources);
     const sourceContext = sources
@@ -409,6 +1118,9 @@ export class RagService {
           `Paginas: ${source.page_start}-${source.page_end}`,
           `Secao: ${source.section_title ?? 'Nao detectada'}`,
           `Score: ${source.score.toFixed(4)}`,
+          `Scores: ${JSON.stringify(source.retrieval_scores ?? {})}`,
+          `Tipo de conteudo: ${source.metadata.content_type ?? 'manual_text'}`,
+          `Entidades detectadas: ${(source.metadata.entities ?? []).join(', ') || 'nenhuma'}`,
           `Imagens candidatas associadas ao trecho: ${source.image_paths.length}`,
           `Trecho:\n${this.truncate(source.text, 2200)}`,
         ].join('\n');
