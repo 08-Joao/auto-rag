@@ -177,6 +177,13 @@ export class RagRetrieverService {
         'tampa',
         'filler',
       ].some((term) => normalizedQuery.includes(term));
+    const hasOilLocationEvidence = [
+      'oil filler cap',
+      'engine oil filler cap',
+      'oil filler neck',
+      'engine oil filler',
+      'fluid containers',
+    ].some((term) => text.includes(term));
 
     let bonus = 0;
 
@@ -214,7 +221,9 @@ export class RagRetrieverService {
           years.length > 0 && !matchesRequestedYear
             ? 0.04
             : isOilLocationQuery
-              ? 0.42
+              ? hasOilLocationEvidence
+                ? 0.18
+                : -0.22
               : 0.22;
         bonus += yearAwareImageBonus;
       }
@@ -228,6 +237,9 @@ export class RagRetrieverService {
         bonus += 0.12;
       }
       if (isOilLocationQuery) {
+        if (!hasOilLocationEvidence) {
+          bonus -= 0.24;
+        }
         if (matchesRequestedYear) {
           bonus += 0.17;
         }

@@ -89,6 +89,8 @@ def enrich_question(question: str) -> str:
         hints.append("vehicle fuse box location diagram")
     if any(term in normalized for term in ["reservatório", "reservatorio", "fluido"]):
         hints.append("vehicle fluid reservoir in engine compartment")
+    if any(term in normalized for term in ["bateria", "battery", "jump start", "partida auxiliar"]):
+        hints.append("battery or jump start terminal location diagram")
     if any(term in normalized for term in ["macaco", "estepe", "spare tire", "jack"]):
         hints.append("vehicle jack and spare tire storage location")
     if any(term in normalized for term in ["painel", "luz", "ícone", "icone", "símbolo", "simbolo"]):
@@ -98,6 +100,98 @@ def enrich_question(question: str) -> str:
         return question
 
     return f"{question}. Visual search hints: {'; '.join(hints)}."
+
+
+def build_prompt_sets(question: str) -> tuple[list[str], list[str]]:
+    normalized = question.lower()
+    positive = [enrich_question(question)]
+    negative: list[str] = []
+
+    if any(term in normalized for term in ["óleo", "oleo", "oil", "tampa"]):
+        positive = [
+            "numbered engine bay diagram with fluid containers",
+            "engine compartment diagram showing the engine oil filler cap",
+            "typical layout of fluid containers and engine oil filler cap",
+            "engine bay top view with numbered labels for oil filler cap",
+            "oil filler cap in engine compartment",
+        ]
+        negative.extend(
+            [
+                "driver footwell hood release lever",
+                "front grille bonnet release latch",
+                "opening the car hood or bonnet latch diagram",
+                "car exterior front bumper with hood release detail",
+            ],
+        )
+
+    if any(term in normalized for term in ["reservatório", "reservatorio", "fluido"]):
+        positive = [
+            "vehicle fluid reservoir in engine compartment",
+            "engine compartment fluid containers diagram",
+            "coolant expansion tank and brake fluid reservoir diagram",
+            "washer fluid container in engine bay",
+        ]
+        negative.extend(
+            [
+                "car exterior photo",
+                "owner manual cover page",
+                "driver footwell release lever",
+            ],
+        )
+
+    if any(term in normalized for term in ["fusível", "fusivel", "fuse"]):
+        positive = [
+            "vehicle fuse box location diagram",
+            "fuse panel diagram in car manual",
+            "dashboard side fuse box access panel",
+            "engine compartment fuse carrier diagram",
+        ]
+        negative.extend(
+            [
+                "owner manual cover page",
+                "car exterior photo",
+                "engine oil filler cap diagram",
+                "hood release lever diagram",
+            ],
+        )
+
+    if any(term in normalized for term in ["bateria", "battery", "jump start", "partida auxiliar"]):
+        positive = [
+            "car battery location diagram",
+            "jump start terminals in engine compartment diagram",
+            "positive and negative battery terminals diagram",
+        ]
+        negative.extend(
+            [
+                "owner manual cover page",
+                "car exterior photo",
+                "engine oil filler cap diagram",
+                "hood release lever diagram",
+            ],
+        )
+
+    if any(term in normalized for term in ["macaco", "estepe", "spare tire", "jack"]):
+        positive = [
+            "vehicle jack and spare tire storage location",
+            "trunk tool kit and spare wheel diagram",
+            "jack storage compartment diagram",
+        ]
+
+    if any(term in normalized for term in ["painel", "luz", "ícone", "icone", "símbolo", "simbolo"]):
+        positive = [
+            "dashboard warning light icon",
+            "instrument cluster warning symbol diagram",
+            "indicator lamp symbol in dashboard",
+        ]
+        negative.extend(
+            [
+                "owner manual cover page",
+                "car exterior photo",
+                "engine compartment fluid containers diagram",
+            ],
+        )
+
+    return positive, negative
 
 
 def main() -> None:
@@ -124,16 +218,36 @@ def main() -> None:
     processor = CLIPProcessor.from_pretrained(args.model)
     model.eval()
 
-    text_inputs = processor(
-        text=[enrich_question(args.question)],
+    positive_prompts, negative_prompts = build_prompt_sets(args.question)
+
+    positive_inputs = processor(
+        text=positive_prompts,
         return_tensors="pt",
         padding=True,
         truncation=True,
     ).to(device)
+    negative_inputs = (
+        processor(
+            text=negative_prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+        ).to(device)
+        if negative_prompts
+        else None
+    )
 
     with torch.no_grad():
-        text_features = as_embedding(model.get_text_features(**text_inputs))
-        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        positive_features = as_embedding(model.get_text_features(**positive_inputs))
+        positive_features = positive_features / positive_features.norm(
+            dim=-1, keepdim=True
+        )
+        negative_features = None
+        if negative_inputs is not None:
+            negative_features = as_embedding(model.get_text_features(**negative_inputs))
+            negative_features = negative_features / negative_features.norm(
+                dim=-1, keepdim=True
+            )
 
     scored: list[dict[str, Any]] = []
     for candidate in unique_candidates:
@@ -146,7 +260,18 @@ def main() -> None:
         with torch.no_grad():
             image_features = as_embedding(model.get_image_features(**image_inputs))
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-            score = float((text_features @ image_features.T).item())
+            positive_scores = positive_features @ image_features.T
+            positive_score, positive_index = torch.max(positive_scores, dim=0)
+            score = float(positive_score.item())
+            positive_label = positive_prompts[int(positive_index.item())]
+
+            negative_score = 0.0
+            negative_label = ""
+            if negative_features is not None:
+                negative_scores = negative_features @ image_features.T
+                best_negative_score, negative_index = torch.max(negative_scores, dim=0)
+                negative_score = float(best_negative_score.item())
+                negative_label = negative_prompts[int(negative_index.item())]
 
         if score < args.threshold:
             continue
@@ -155,6 +280,10 @@ def main() -> None:
             {
                 "imagePath": candidate["imagePath"],
                 "score": score,
+                "positiveScore": score,
+                "positiveLabel": positive_label,
+                "negativeScore": negative_score,
+                "negativeLabel": negative_label,
                 "page": candidate.get("page"),
                 "source": candidate.get("source"),
                 "chunkId": candidate.get("chunkId"),

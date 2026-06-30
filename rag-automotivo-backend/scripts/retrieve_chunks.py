@@ -318,9 +318,26 @@ def visual_location_lexical_score(item: dict[str, Any], query: str) -> float:
     document_name = item.get("document_name", "").lower()
     years = query_years(query)
     image_count = len(item.get("image_paths", []))
+    is_oil_component_location = any(
+        term in normalized_query
+        for term in ["oleo", "óleo", "oil", "tampa", "filler"]
+    )
+    has_oil_component_evidence = any(
+        term in text
+        for term in [
+            "oil filler cap",
+            "engine oil filler cap",
+            "oil filler neck",
+            "engine oil filler",
+            "fluid containers",
+        ]
+    )
 
     score = 0.0
     has_location_evidence = False
+
+    if is_oil_component_location and not has_oil_component_evidence:
+        return 0.0
 
     if "oil filler cap location" in text:
         score += 0.45
@@ -340,14 +357,17 @@ def visual_location_lexical_score(item: dict[str, Any], query: str) -> float:
     ):
         score += 0.4
         has_location_evidence = True
-    if any(term in text for term in ["engine compartment", "under the hood", "bonnet"]):
+    if (
+        not is_oil_component_location
+        and any(term in text for term in ["engine compartment", "under the hood", "bonnet"])
+    ):
         score += 0.12
         has_location_evidence = True
     if not has_location_evidence:
         return 0.0
 
     if image_count > 0:
-        score += 0.8
+        score += 0.25
     if years and any(year in document_name for year in years):
         score += 0.25
     if "vw 502 00" in text or "viscosity" in text:

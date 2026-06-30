@@ -40,9 +40,45 @@ export type RagRetrievalResult = {
 export type ClipImageResult = {
   imagePath: string;
   score: number;
+  positiveScore?: number;
+  positiveLabel?: string;
+  negativeScore?: number;
+  negativeLabel?: string;
   page?: number;
   source?: string;
   chunkId?: string;
+  caption?: string;
+  ocrText?: string;
+  textScore?: number;
+  isRelevant?: boolean;
+  rejectionReason?: string;
+  reason?: string;
+  confidence?: number;
+};
+
+export type ImageRerankCandidate = {
+  imageId: string;
+  imagePath: string;
+  page: number;
+  caption: string;
+  ocrText: string;
+  clipScore: number;
+  textScore: number;
+  isRelevant: boolean;
+  rejectionReason: string;
+  source?: string;
+  chunkId?: string;
+};
+
+export type ImageRerankResult = {
+  selectedImages: ClipImageResult[];
+  rejectedImages: Array<{
+    imageId: string;
+    imagePath: string;
+    page?: number;
+    reason: string;
+  }>;
+  candidates: ImageRerankCandidate[];
 };
 
 export type RagAnswer = {

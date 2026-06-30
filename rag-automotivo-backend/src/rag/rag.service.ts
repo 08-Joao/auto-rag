@@ -16,6 +16,7 @@ import type {
   RagStreamEvent,
   RagVehicleDetected,
   RagQueryRewriteResult,
+  ImageRerankResult,
 } from './types';
 
 type QueryIntent = {
@@ -31,6 +32,13 @@ type StructuredAnswer = {
   citations: RagCitation[];
   warnings: string[];
   missingInformation: string[];
+};
+
+type FinalResponseReview = {
+  answer: string;
+  confidence: number;
+  warnings: string[];
+  penalties: string[];
 };
 
 @Injectable()
@@ -52,6 +60,10 @@ export class RagService {
       'Para pneus e rodas, interprete medidas como "225/50 R 17" como aro 17 polegadas; em "Rim size 7Jx16", o aro e 16 polegadas.',
       'Para perguntas sobre onde fica o oleo, reservatorio de oleo ou tampa do oleo, use o termo do manual: "tampa/bocal de abastecimento do oleo do motor" ou "oil filler cap". Nao invente um reservatorio separado se o manual so mencionar a tampa/bocal.',
       'Quando o contexto mencionar uma figura de localizacao, como "Oil filler cap location" ou "Typical layout", diga isso de forma direta e evite detalhes de posicao que nao estejam no trecho.',
+      'Voce NAO deve mandar o usuario consultar o manual. Use o manual para responder.',
+      'Nunca responda apenas com "consulte o manual", "veja o diagrama", "consulte a tabela" ou equivalente.',
+      'Se o manual disser "ver figura X", explique o que a figura mostra com as informacoes disponiveis no contexto.',
+      'Para perguntas "onde fica", "como localizar" ou "mostre onde", responda de forma operacional: nome da peca, posicao aproximada, como reconhecer, e fonte.',
       'No final, quando fizer sentido, ofereca 2 ou 3 proximas acoes curtas em uma linha iniciada por "Posso ajudar tambem com:".',
       'Quando houver fonte util, cite documento e paginas no corpo da resposta.',
       'Se imagens forem relevantes, diga de forma breve que ha imagens ou diagramas associados. Nao liste caminhos de arquivos na resposta.',
@@ -224,41 +236,59 @@ export class RagService {
         structuredAnswer.returnImages,
         candidateSources,
       );
-      const sources = await this.prepareSourcesForFinalResponse(
+      const imagePreparation = await this.prepareSourcesForFinalResponse(
         resolvedQuestion,
         candidateSources,
         returnImages,
+        intent,
+        rewrite.vehicle,
       );
+      const sources = imagePreparation.sources;
       const images = this.collectImages(sources);
-      const confidence = this.calculateConfidence(sources, images, intent);
+      const confidenceBeforePenalties = this.calculateConfidence(
+        sources,
+        images,
+        intent,
+      );
       const citations = this.buildCitations(
         structuredAnswer.citations,
         sources,
       );
-      const warnings = this.buildWarnings(
+      const reviewed = this.reviewFinalResponse(
         structuredAnswer.answer,
         sources,
-        confidence,
+        confidenceBeforePenalties,
         structuredAnswer.warnings,
+        intent,
+        imagePreparation.imageRerank,
+      );
+      const finalAnswer = this.ensureAnswerHasSourceFooter(
+        reviewed.answer,
+        sources,
+        reviewed.confidence,
+      );
+      this.logFinalDecision(
+        rewrite,
+        sources,
+        imagePreparation.imageRerank,
+        confidenceBeforePenalties,
+        reviewed.confidence,
+        finalAnswer,
       );
 
       return {
-        answer: this.ensureAnswerHasSourceFooter(
-          structuredAnswer.answer,
-          sources,
-          confidence,
-        ),
+        answer: finalAnswer,
         sources,
         returnImages: returnImages && images.length > 0,
-        confidence,
-        status: confidence >= this.minimumConfidenceForAnswer(intent)
+        confidence: reviewed.confidence,
+        status: reviewed.confidence >= this.minimumConfidenceForAnswer(intent)
           ? 'answered'
           : 'insufficient_context',
         reasoningType: intent.reasoningType,
         vehicleDetected,
         citations,
         images,
-        warnings,
+        warnings: reviewed.warnings,
         missingInformation: structuredAnswer.missingInformation,
         conversationState: rewrite.state,
         resolvedQuery: resolvedQuestion,
@@ -508,27 +538,44 @@ export class RagService {
         structuredAnswer.returnImages,
         candidateSources,
       );
-      const sources = await this.prepareSourcesForFinalResponse(
+      const imagePreparation = await this.prepareSourcesForFinalResponse(
         resolvedQuestion,
         candidateSources,
         returnImages,
+        intent,
+        rewrite.vehicle,
       );
+      const sources = imagePreparation.sources;
       const images = this.collectImages(sources);
-      const confidence = this.calculateConfidence(sources, images, intent);
+      const confidenceBeforePenalties = this.calculateConfidence(
+        sources,
+        images,
+        intent,
+      );
       const citations = this.buildCitations(
         structuredAnswer.citations,
         sources,
       );
-      const warnings = this.buildWarnings(
+      const reviewed = this.reviewFinalResponse(
         structuredAnswer.answer,
         sources,
-        confidence,
+        confidenceBeforePenalties,
         structuredAnswer.warnings,
+        intent,
+        imagePreparation.imageRerank,
       );
       const finalAnswer = this.ensureAnswerHasSourceFooter(
-        structuredAnswer.answer,
+        reviewed.answer,
         sources,
-        confidence,
+        reviewed.confidence,
+      );
+      this.logFinalDecision(
+        rewrite,
+        sources,
+        imagePreparation.imageRerank,
+        confidenceBeforePenalties,
+        reviewed.confidence,
+        finalAnswer,
       );
 
       yield { type: 'token', token: finalAnswer };
@@ -539,15 +586,15 @@ export class RagService {
         sources,
         returnImages: returnImages && images.length > 0,
         visualIntent: returnImages && images.length > 0,
-        confidence,
-        status: confidence >= this.minimumConfidenceForAnswer(intent)
+        confidence: reviewed.confidence,
+        status: reviewed.confidence >= this.minimumConfidenceForAnswer(intent)
           ? 'answered'
           : 'insufficient_context',
         reasoningType: intent.reasoningType,
         vehicleDetected,
         citations,
         images,
-        warnings,
+        warnings: reviewed.warnings,
         missingInformation: structuredAnswer.missingInformation,
         conversationState: rewrite.state,
         resolvedQuery: resolvedQuestion,
@@ -686,9 +733,11 @@ export class RagService {
     question: string,
     sources: RagSource[],
     returnImages: boolean,
-  ): Promise<RagSource[]> {
+    intent: QueryIntent,
+    vehicle: RagQueryRewriteResult['vehicle'],
+  ): Promise<{ sources: RagSource[]; imageRerank?: ImageRerankResult }> {
     if (!returnImages) {
-      return this.visualImages.stripImages(sources);
+      return { sources: this.visualImages.stripImages(sources) };
     }
 
     const clipResults = await this.visualImages.analyzeImagesWithClip(
@@ -700,10 +749,40 @@ export class RagService {
       this.logger.log(
         'CLIP nao encontrou imagens acima do threshold; resposta seguira apenas com texto.',
       );
-      return this.visualImages.stripImages(sources);
+      return {
+        sources: this.visualImages.stripImages(sources),
+        imageRerank: {
+          selectedImages: [],
+          rejectedImages: [],
+          candidates: [],
+        },
+      };
     }
 
-    return this.visualImages.filterSourcesByClipResults(sources, clipResults);
+    const component = this.detectComponent(question);
+    const imageRerank = this.visualImages.rerankImages({
+      resolvedQuery: question,
+      intent: intent.reasoningType,
+      component,
+      vehicle,
+      sources,
+      clipResults,
+    });
+
+    if (imageRerank.selectedImages.length === 0) {
+      this.logger.log(
+        'Image reranker rejeitou todas as imagens candidatas; resposta seguira apenas com texto.',
+      );
+      return { sources: this.visualImages.stripImages(sources), imageRerank };
+    }
+
+    return {
+      sources: this.visualImages.filterSourcesByRerankResult(
+        sources,
+        imageRerank,
+      ),
+      imageRerank,
+    };
   }
 
   private classifyIntent(question: string): QueryIntent {
@@ -828,6 +907,35 @@ export class RagService {
     );
   }
 
+  private logFinalDecision(
+    rewrite: RagQueryRewriteResult,
+    sources: RagSource[],
+    imageRerank: ImageRerankResult | undefined,
+    confidenceBeforePenalties: number,
+    confidenceAfterPenalties: number,
+    finalAnswer: string,
+  ): void {
+    this.logger.debug(
+      JSON.stringify({
+        rawMessage: rewrite.rawMessage,
+        pendingQuestion: rewrite.pendingQuestion,
+        resolvedQuery: rewrite.resolvedQuery,
+        retrievedPages: sources.map((source) => ({
+          document: source.document_name,
+          pageStart: source.page_start,
+          pageEnd: source.page_end,
+        })),
+        selectedImages: imageRerank?.selectedImages ?? [],
+        rejectedImages: imageRerank?.rejectedImages ?? [],
+        imageRejectionReasons:
+          imageRerank?.rejectedImages.map((image) => image.reason) ?? [],
+        confidenceBeforePenalties,
+        confidenceAfterPenalties,
+        finalAnswer,
+      }),
+    );
+  }
+
   private shouldReturnImages(
     intent: QueryIntent,
     modelWantsImages: boolean,
@@ -842,6 +950,27 @@ export class RagService {
     }
 
     return intent.visualRequired || modelWantsImages;
+  }
+
+  private detectComponent(question: string): string {
+    const normalized = question.toLowerCase();
+    if (
+      /tampa.*(?:oleo|óleo)|(?:oleo|óleo).*tampa|oil filler cap|engine oil filler/i.test(
+        normalized,
+      )
+    ) {
+      return 'tampa de oleo';
+    }
+    if (/reservatorio|reservatório|reservoir/i.test(normalized)) {
+      return 'reservatorio';
+    }
+    if (/fusivel|fusível|fuse/i.test(normalized)) {
+      return 'fusivel';
+    }
+    if (/bateria|battery/i.test(normalized)) {
+      return 'bateria';
+    }
+    return '';
   }
 
   private detectVehicle(
@@ -1088,6 +1217,250 @@ export class RagService {
     }
 
     return [...warnings].slice(0, 8);
+  }
+
+  private reviewFinalResponse(
+    answer: string,
+    sources: RagSource[],
+    confidenceBeforePenalties: number,
+    modelWarnings: string[],
+    intent: QueryIntent,
+    imageRerank?: ImageRerankResult,
+  ): FinalResponseReview {
+    let finalAnswer = answer.trim();
+    const penalties: string[] = [];
+    let confidence = confidenceBeforePenalties;
+    const originalAnswer = finalAnswer;
+    const operational = this.buildOperationalLocationAnswer(sources, intent);
+
+    if (operational) {
+      finalAnswer = operational;
+    }
+
+    if (this.isManualReferralOnly(finalAnswer)) {
+      penalties.push('Resposta apenas manda consultar o manual: -40%.');
+      confidence -= 0.4;
+    } else if (this.containsManualReferral(finalAnswer)) {
+      penalties.push('Resposta contem encaminhamento ao manual sem extracao suficiente: -15%.');
+      confidence -= 0.15;
+    }
+
+    if (this.hasForbiddenOilCapReservoirClaim(originalAnswer, intent)) {
+      penalties.push('Resposta confundiu tampa/bocal de oleo com reservatorio: -45%.');
+      confidence -= 0.45;
+      if (operational) {
+        finalAnswer = operational;
+      }
+    }
+
+    if (this.isGenericAnswer(originalAnswer, intent)) {
+      penalties.push('Resposta generica ou pouco operacional: -30%.');
+      confidence -= 0.3;
+      if (operational) {
+        finalAnswer = operational;
+      }
+    }
+
+    if (!this.sourcesHaveUsefulEvidence(sources, intent)) {
+      penalties.push('Fonte recuperada sem trecho util para a pergunta: -30%.');
+      confidence -= 0.3;
+    }
+
+    const rejectedReasons = imageRerank?.rejectedImages.map((item) => item.reason) ?? [];
+    if (
+      imageRerank?.selectedImages.some((image) => image.isRelevant === false)
+    ) {
+      penalties.push('Imagem irrelevante selecionada: -50%.');
+      confidence -= 0.5;
+    }
+
+    if (
+      rejectedReasons.some((reason) => /vazia|quebrada|inacessivel/i.test(reason))
+    ) {
+      penalties.push('Imagem vazia ou quebrada detectada e rejeitada: -60% na avaliacao visual.');
+    }
+
+    if (
+      intent.visualRequired &&
+      imageRerank &&
+      imageRerank.selectedImages.length === 0
+    ) {
+      penalties.push('Nenhuma imagem confiavel passou na validacao visual: -15%.');
+      confidence -= 0.15;
+      if (!/nao encontrei uma imagem confiavel|não encontrei uma imagem confiável/i.test(finalAnswer)) {
+        finalAnswer = [
+          finalAnswer,
+          '',
+          'Nao encontrei uma imagem confiavel da tampa de oleo nos trechos recuperados, entao nao vou exibir imagens nesta resposta.',
+        ].join('\n');
+      }
+    }
+
+    confidence = Number(Math.max(0, Math.min(0.99, confidence)).toFixed(2));
+    const warnings = this.buildWarnings(
+      finalAnswer,
+      sources,
+      confidence,
+      [...modelWarnings, ...penalties],
+    );
+
+    return { answer: finalAnswer, confidence, warnings, penalties };
+  }
+
+  private isManualReferralOnly(answer: string): boolean {
+    const normalized = answer.toLowerCase();
+    const referral =
+      /(consulte|veja|verifique|confira|olhe)\s+(o\s+)?(manual|diagrama|figura|tabela|pagina|página)/i.test(
+        normalized,
+      ) ||
+      /consulte\s+.*pagina|consulte\s+.*página|consulte\s+.*diagrama/i.test(
+        normalized,
+      );
+    if (!referral) {
+      return false;
+    }
+
+    const operationalTerms =
+      /(fica|localiza|localizada|localizado|compartimento do motor|parte superior|bocal|tampa|filler cap|proximo|próximo|reconhecer|simbolo|símbolo)/i.test(
+        normalized,
+      );
+    const shortReferral = normalized.split(/\s+/).length <= 55;
+
+    return shortReferral || !operationalTerms;
+  }
+
+  private containsManualReferral(answer: string): boolean {
+    return /(consulte|veja|verifique|confira)\s+(o\s+)?(manual|diagrama|figura|tabela|pagina|página)/i.test(
+      answer,
+    );
+  }
+
+  private isGenericAnswer(answer: string, intent: QueryIntent): boolean {
+    if (!intent.visualRequired) {
+      return false;
+    }
+
+    const normalized = answer.toLowerCase();
+    const hasPracticalLocation =
+      /(compartimento do motor|engine compartment|parte superior|bocal|tampa|filler cap|fica|localiza|identificada|identificado|simbolo|símbolo)/i.test(
+        normalized,
+      );
+    const generic =
+      /(informe qual motor|para uma orientacao mais precisa|orientação mais precisa|mais detalhes sobre localizacao|localização especifica|especifica da peca)/i.test(
+        normalized,
+      );
+
+    return generic || !hasPracticalLocation;
+  }
+
+  private hasForbiddenOilCapReservoirClaim(
+    answer: string,
+    intent: QueryIntent,
+  ): boolean {
+    if (!intent.visualRequired) {
+      return false;
+    }
+
+    const normalized = answer.toLowerCase();
+    return (
+      /tampa.*(?:reservatorio|reservatório)|(?:reservatorio|reservatório).*oleo|reservatório de óleo|reservatorio de oleo/i.test(
+        normalized,
+      ) &&
+      /tampa|bocal|oil filler cap|engine oil filler/i.test(normalized)
+    );
+  }
+
+  private sourcesHaveUsefulEvidence(
+    sources: RagSource[],
+    intent: QueryIntent,
+  ): boolean {
+    if (!intent.visualRequired) {
+      return sources.length > 0;
+    }
+
+    return sources.some((source) =>
+      /(engine compartment|compartimento do motor|engine oil filler cap|oil filler cap|engine oil filler|tampa|bocal|oleo do motor|óleo do motor|typical layout)/i.test(
+        source.text,
+      ),
+    );
+  }
+
+  private buildOperationalLocationAnswer(
+    sources: RagSource[],
+    intent: QueryIntent,
+  ): string | null {
+    if (!intent.visualRequired) {
+      return null;
+    }
+
+    const oilCapSource = sources.find((source) =>
+      /(engine oil filler cap|oil filler cap|engine oil filler|tampa.*oleo|tampa.*óleo|bocal.*oleo|bocal.*óleo)/i.test(
+        source.text,
+      ),
+    );
+    if (!oilCapSource) {
+      return null;
+    }
+
+    const figure = this.extractFigureReference(oilCapSource.text);
+    const item = this.extractOilCapItem(oilCapSource.text);
+    const itemText = item
+      ? ` No diagrama/lista da figura, ela aparece como "${item}".`
+      : '';
+    const figureText = figure
+      ? ` A referencia visual do manual e ${figure.replace(/\s+/g, ' ').trim()}.`
+      : '';
+
+    return [
+      'A tampa de abastecimento do oleo do motor fica no compartimento do motor. O manual a identifica como "engine oil filler cap"; ou seja, e a tampa/bocal usado para completar o oleo do motor.',
+      `${itemText}${figureText}`.trim(),
+      'Como localizar na pratica: abra o capo e procure no conjunto do motor pela tampa marcada com o simbolo de oleo. Nao confunda com um reservatorio separado; o manual cita a tampa/bocal de abastecimento do oleo do motor.',
+      'Observacao de seguranca: apos completar ou verificar, recoloque a tampa corretamente para evitar respingos de oleo em partes quentes do motor.',
+      '',
+      `Fonte: ${oilCapSource.document_name}, paginas ${oilCapSource.page_start}-${oilCapSource.page_end}, secao ${oilCapSource.section_title ?? 'Engine compartment'}.`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  private extractOilCapItem(text: string): string {
+    const line = text
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .find(
+        (item) =>
+          /engine oil f(?:ill|i ll|l l)?er cap/i.test(item) &&
+          !/^fig\.?\s*\d+/i.test(item),
+      );
+    return line?.replace(/\s+/g, ' ').trim() ?? 'engine oil filler cap';
+  }
+
+  private extractFigureReference(text: string): string {
+    const lines = text.split(/\r?\n/).map((line) => line.trim());
+    const index = lines.findIndex((line) => /\bFig\.?\s*\d+/i.test(line));
+    if (index < 0) {
+      return '';
+    }
+
+    const figureLines = [lines[index]];
+    const firstLine = lines[index].toLowerCase();
+    for (const next of lines.slice(index + 1, index + 3)) {
+      if (!next) {
+        break;
+      }
+      if (/^(?:[a-z]\s*)?\d+\b|^[a-z]$/i.test(next)) {
+        break;
+      }
+      if (
+        firstLine.includes('filler cap') ||
+        firstLine.includes('oil filler')
+      ) {
+        break;
+      }
+      figureLines.push(next);
+    }
+
+    return figureLines.join(' ').replace(/\s+/g, ' ').trim();
   }
 
   private ensureAnswerHasSourceFooter(
