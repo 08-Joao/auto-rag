@@ -1,0 +1,14 @@
+\begin{resumo}[Abstract]
+\begin{otherlanguage*}{english}
+This work presents the development of an informational support system for the automotive sector based on Retrieval-Augmented Generation (RAG). The proposal emerged from a practical difficulty: relevant vehicle information, such as oil specifications, component locations, checking procedures, safety warnings, and diagrams, is usually available in official manuals, but spread across long documents that are not always convenient for quick consultation. In this context, the developed system aims to bring users closer to this information through a conversational interface, while keeping answers connected to excerpts and images retrieved from the manuals.
+
+The solution was implemented for local execution and integrates a Next.js frontend, a NestJS backend, chat persistence with Prisma and PostgreSQL, Python scripts for document retrieval, a FAISS vector index, hybrid search using vector, lexical, and domain-specific signals, and answer generation through Ollama with the DeepSeek R1 8B model. During development, the project incorporated conversational memory, query rewriting, visual question detection, local CLIP-based image selection, image reranking with positive and negative prompts, and post-processing mechanisms to reduce generic or weakly grounded answers.
+
+The work also proposes a comparative analysis with large language models when they do not have direct access to the manuals. This comparison will be carried out in a later stage, since the system is still being refined, especially regarding visual retrieval, confidence calibration, and the construction of the evaluation dataset. Therefore, the main contribution of this stage is the construction and documentation of a functional automotive RAG architecture, capable of combining text, metadata, conversational history, and manual images to support more traceable and contextualized answers.
+
+\vspace{\onelineskip}
+
+\noindent
+\textbf{Key-words}: retrieval-augmented generation. automotive manuals. language models. FAISS. CLIP. Ollama.
+\end{otherlanguage*}
+\end{resumo}

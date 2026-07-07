@@ -1,0 +1,87 @@
+% ----------------------------------------------------------
+% Capitulo de revisão de literatura
+% ----------------------------------------------------------
+\chapter{Fundamentação teórica e trabalhos relacionados}
+\label{cap:revisao}
+% ----------------------------------------------------------
+
+Este capítulo apresenta os fundamentos teóricos utilizados na construção do sistema e discute trabalhos relacionados ao uso de modelos de linguagem e recuperação documental no domínio automotivo. A revisão orientou decisões práticas tomadas durante o desenvolvimento, como a adoção de RAG, embeddings densos, FAISS, modelos locais, recuperação multimodal, memória conversacional e mecanismos de controle para reduzir respostas sem base documental.
+
+\section{Transformers e modelos de linguagem}
+
+A arquitetura Transformer introduziu o mecanismo de atenção como elemento central para modelagem de sequências \cite{vaswani2017attention}. Essa arquitetura se tornou a base de grande parte dos modelos de linguagem contemporâneos. Modelos de linguagem de grande porte, ou \acf{LLM}s, são treinados para predizer e gerar texto a partir de grandes corpora, permitindo responder perguntas, resumir documentos e reformular textos.
+
+Entretanto, fluência textual não implica fidelidade factual. Em domínios técnicos, como o automotivo, uma resposta gramaticalmente correta pode estar errada se não estiver apoiada no manual correspondente ao veículo. Essa observação é central para este trabalho: a comparação planejada com grandes modelos de linguagem não busca medir conhecimento geral, mas observar o comportamento desses modelos quando respondem sem acesso direto aos manuais. Por isso, a geração de texto é tratada como etapa final de um pipeline mais amplo, subordinada ao contexto recuperado.
+
+\section{Recuperação da informação e busca semântica}
+
+A recuperação da informação estuda métodos para representar, buscar e ordenar documentos conforme sua relevância para uma consulta \cite{manning2008information}. Em manuais automotivos, técnicas puramente lexicais podem falhar porque o usuário utiliza termos cotidianos enquanto o manual emprega nomenclatura técnica. Um exemplo é a diferença entre ``onde coloca óleo?'' e ``tampa de abastecimento do óleo do motor''.
+
+Por esse motivo, a solução utiliza embeddings para aproximar consultas e trechos semanticamente relacionados. Modelos de sentenças, como Sentence-BERT, demonstraram a utilidade de representações densas para tarefas de similaridade textual \cite{reimers2019sentencebert}. Além disso, a implementação atual combina sinais vetoriais com \acf{BM25}, regras de domínio e metadados do veículo, melhorando a seleção de evidências antes da geração.
+
+\section{Retrieval-Augmented Generation}
+
+RAG combina recuperação de documentos com geração de linguagem natural \cite{lewis2020rag}. Em vez de exigir que o modelo possua internamente todo o conhecimento necessário, o sistema recupera passagens relevantes e as fornece como contexto. Essa estratégia é adequada para tarefas intensivas em conhecimento, especialmente quando respostas precisam estar ancoradas em fontes externas \cite{gao2023rag}.
+
+Neste trabalho, RAG foi escolhido porque os manuais automotivos formam uma base de conhecimento fechada e verificável. Perguntas sobre óleo, pneus, capacidades, fusíveis, procedimentos e localização de componentes exigem especificidade. A arquitetura também contribui para mitigar alucinações, que são respostas sem suporte factual ou inconsistentes com a fonte esperada \cite{huang2023hallucination}. Na prática, o RAG permite que o sistema responda a partir de um manual específico, em vez de depender apenas de padrões gerais aprendidos durante o treinamento de um modelo.
+
+\section{FAISS e busca vetorial}
+
+O FAISS foi adotado como mecanismo de indexação vetorial por oferecer estruturas eficientes para busca por similaridade em vetores densos \cite{johnson2021faiss}. Na solução desenvolvida, cada chunk recebe um embedding e é armazenado em um índice FAISS. Quando o usuário faz uma pergunta, a consulta também é convertida em embedding, e o índice retorna os vetores mais próximos.
+
+A decisão por FAISS separa responsabilidades. O PostgreSQL, acessado por Prisma, armazena usuários, chats, mensagens e metadados conversacionais. O FAISS atende à recuperação documental. Essa separação evita misturar persistência transacional da aplicação com busca vetorial.
+
+\section{Ollama e DeepSeek}
+
+O Ollama foi adotado como mecanismo de execução local do modelo gerativo. Ele simplifica o gerenciamento de modelos locais e permite que o backend envie prompts sem depender de provedores externos. O modelo principal utilizado no protótipo é o DeepSeek R1 8B. A escolha por um modelo de 8 bilhões de parâmetros representa um compromisso entre viabilidade local e capacidade de geração.
+
+Neste trabalho, o objetivo não é demonstrar que um modelo local leve supera modelos maiores em conhecimento geral. O objetivo é avaliar se, com acesso aos manuais corretos, um modelo local pode responder melhor a perguntas técnicas específicas do que modelos sem acesso às fontes.
+
+\section{Recuperação multimodal e CLIP}
+
+Manuais automotivos não são compostos apenas por texto. Muitas respostas dependem de figuras, diagramas, imagens de painel, localização de componentes e esquemas do cofre do motor. A solução associa imagens extraídas dos PDFs aos chunks textuais e utiliza CLIP para reranquear imagens candidatas conforme sua relação semântica com a pergunta \cite{radford2021clip}.
+
+Na implementação atual, o CLIP é executado localmente e só é acionado quando a pergunta resolvida possui intenção visual e existem imagens candidatas. Esse detalhe é importante: uma mensagem curta como ``Audi A4 2010'' não deve, por si só, acionar imagens. Porém, se ela complementa uma pergunta pendente como ``onde fica a tampa do óleo?'', a consulta reescrita mantém a intenção visual.
+
+Além da similaridade positiva entre pergunta e imagem, a implementação passou a utilizar prompts negativos para alguns tipos de consulta visual. Por exemplo, em perguntas sobre tampa de abastecimento de óleo, imagens de abertura do capô ou da trava frontal do capô podem ser visualmente próximas, mas não respondem à pergunta. O uso de prompts negativos e validações textuais auxilia na rejeição dessas imagens.
+
+\section{Memória conversacional e reescrita de consultas}
+
+Sistemas RAG conversacionais precisam diferenciar perguntas independentes de continuações. Sem essa camada, o retriever pode receber apenas uma mensagem curta, como ``2010'', ``2.0'' ou ``Audi A4 2010'', perdendo a intenção original. A solução implementada neste trabalho inclui um estado conversacional por chat com pergunta pendente, consulta resolvida, intenção, veículo, slots ausentes e indicador de esclarecimento pendente.
+
+O módulo de reescrita transforma histórico, estado e mensagem atual em uma consulta completa antes da busca. Assim, se o usuário pergunta ``Onde fica a tampa do óleo do Audi A4?'' e depois informa ``Audi A4 2010'', o FAISS recebe a consulta ``Onde fica a tampa do óleo do Audi A4 2010?''. Essa etapa é uma correção arquitetural implementada no backend e testada automaticamente.
+
+\section{Comparação com grandes modelos de linguagem}
+
+Grandes modelos de linguagem, como os disponibilizados em aplicações comerciais, apresentam desempenho elevado em tarefas gerais de escrita, síntese e resposta a perguntas. No entanto, quando não possuem acesso ao documento técnico específico, suas respostas podem depender de conhecimento geral ou de padrões aproximados. No domínio automotivo, essa limitação é relevante porque pequenas diferenças entre ano, motorização ou versão podem alterar uma recomendação.
+
+Assim, a análise comparativa proposta neste trabalho será conduzida considerando uma condição específica: modelos sem acesso aos manuais em contraste com o sistema RAG local, que possui acesso à base documental. A intenção não é afirmar superioridade geral do sistema desenvolvido, mas avaliar se o acesso estruturado aos manuais oferece vantagem em perguntas factuais e dependentes de documentação.
+
+\section{Segurança e prevenção de alucinações}
+
+Sistemas baseados em LLMs precisam considerar ataques de \textit{prompt injection}, nos quais a entrada do usuário tenta sobrescrever instruções do sistema ou revelar prompts internos \cite{kumar2024prompt}. No sistema desenvolvido, pergunta, histórico e contexto recuperado são tratados como conteúdo não confiável quando tentam alterar o papel do assistente.
+
+Além disso, o backend calcula confiança, preserva fontes, citações e avisos. A implementação também realiza pós-processamento de respostas frágeis. Em perguntas de localização de componentes, quando há evidência clara no manual, o backend pode montar uma resposta mais determinística, evitando que o modelo use termos inadequados ou apenas encaminhe o usuário para consultar a figura.
+
+\section{Trabalhos relacionados}
+
+O IDAS propõe assistência inteligente ao motorista utilizando RAG para consultar manuais veiculares \cite{hernandez2024idas}. O MaQA aborda perguntas específicas de veículos a partir de manuais e classificação de perguntas \cite{park2024maqa}. Medeiros et al. analisam chatbots baseados em modelos de linguagem para perguntas em manuais automotivos em PDF \cite{medeiros2023automotive}. Yildirim e Samli propõem um assistente automotivo baseado em RAG para recuperação aprimorada de informações \cite{yildirim2025rag}.
+
+Este trabalho se diferencia por integrar execução local, aplicação web, FAISS, Ollama, DeepSeek R1 8B, recuperação multimodal com CLIP, persistência de conversas, memória conversacional, reescrita de consultas, validação de imagens e preparação de uma avaliação comparativa com grandes modelos de linguagem em um mesmo artefato.
+
+\begin{table}[H]
+\centering
+\caption{Comparação entre trabalhos relacionados e a proposta desenvolvida}
+\label{tab:relacionados}
+\begin{tabular}{p{3cm}p{4cm}p{6cm}}
+\hline
+Trabalho & Proposta & Avanço deste trabalho \\
+\hline
+IDAS & Assistente veicular com RAG & Aplicação web local, base documental própria e recuperação multimodal \\
+MaQA & Perguntas automotivas por categorias & Recuperação aberta de chunks diretamente dos manuais \\
+Medeiros et al. & Avaliação de chatbots para manuais & Pipeline próprio com FAISS, Ollama, CLIP e persistência \\
+Yildirim e Samli & Assistente RAG automotivo & Detalhamento de ingestão, chunking, imagens e memória conversacional \\
+\hline
+\end{tabular}
+\fonte{Elaborado pelo autor.}
+\end{table}

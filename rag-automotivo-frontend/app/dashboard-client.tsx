@@ -72,9 +72,21 @@ function getSources(message: ChatMessage): RagSource[] {
   return message.metadata?.sources ?? [];
 }
 
-function getImagePaths(sources: RagSource[]) {
+function getImagePaths(message: ChatMessage) {
+  const approvedImages = message.metadata?.images ?? [];
+  if (approvedImages.length > 0) {
+    return Array.from(new Set(approvedImages.map((image) => image.imagePath)));
+  }
+
+  const sources = getSources(message);
   return Array.from(
-    new Set(sources.flatMap((source) => source.image_paths ?? [])),
+    new Set(
+      sources.flatMap((source) =>
+        source.clip_results?.length
+          ? source.clip_results.map((result) => result.imagePath)
+          : [],
+      ),
+    ),
   );
 }
 
@@ -148,7 +160,9 @@ function SourceItem({
   source: RagSource;
   visualIntent: boolean;
 }) {
-  const images = visualIntent ? (source.image_paths ?? []) : [];
+  const images = visualIntent
+    ? (source.clip_results ?? []).map((result) => result.imagePath)
+    : [];
   const documentName = formatSourceDocumentName(source);
 
   return (
@@ -262,8 +276,10 @@ function MessageSources({
   message: ChatMessage;
 }) {
   const sources = getSources(message);
-  const imagePaths = getImagePaths(sources);
+  const imagePaths = getImagePaths(message);
   const visualIntent = shouldShowImageGallery(message);
+  const confidence = message.metadata?.confidence;
+  const status = message.metadata?.status;
 
   if (isStreaming || sources.length === 0) {
     return null;
@@ -271,7 +287,19 @@ function MessageSources({
 
   return (
     <div className="mt-4 space-y-3">
-      <SourcesDropdown sources={sources} visualIntent={visualIntent} />
+      <div className="flex flex-wrap items-center gap-2">
+        <SourcesDropdown sources={sources} visualIntent={visualIntent} />
+        {typeof confidence === "number" && (
+          <span className="rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
+            Confiança {Math.round(confidence * 100)}%
+          </span>
+        )}
+        {status && status !== "answered" && (
+          <span className="rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
+            {status}
+          </span>
+        )}
+      </div>
 
       {visualIntent && imagePaths.length > 0 && shouldShowImageGallery(message) && (
         <div className="grid gap-3 sm:grid-cols-2">

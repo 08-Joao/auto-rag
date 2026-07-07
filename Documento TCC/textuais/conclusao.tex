@@ -1,0 +1,22 @@
+% ----------------------------------------------------------
+% Conclusão
+% ----------------------------------------------------------
+\chapter[Conclusão]{Conclusão}
+\label{cap:conclusao}
+% ---
+
+Este trabalho apresentou o desenvolvimento de um sistema de suporte informacional para o setor automotivo utilizando \textit{Retrieval-Augmented Generation}. A proposta surgiu a partir de uma dificuldade prática: informações importantes sobre veículos estão presentes em manuais oficiais, diagramas e documentos técnicos, mas nem sempre são fáceis de localizar ou interpretar durante uma consulta comum.
+
+Ao longo do desenvolvimento, o sistema evoluiu de um fluxo inicial baseado em busca vetorial e geração de resposta para uma arquitetura mais completa, composta por aplicação web, backend, serviço Python de recuperação, base FAISS, execução local com Ollama, modelo DeepSeek-R1:8B e mecanismos de apoio para contexto conversacional e seleção de imagens. Essa evolução foi necessária porque perguntas automotivas frequentemente dependem de detalhes como modelo, ano, motor, página do manual, figura associada e intenção real do usuário.
+
+Uma das principais melhorias foi a introdução de memória conversacional e reescrita de consultas. Com isso, mensagens curtas como ano, versão ou motorização podem complementar uma pergunta anterior, em vez de serem tratadas como uma nova pergunta independente. Essa mudança tornou o fluxo mais coerente e reduziu erros em conversas nas quais o sistema solicita uma informação adicional ao usuário.
+
+Outro ponto relevante foi o aprimoramento do tratamento de respostas visuais. O sistema passou a diferenciar melhor perguntas textuais de perguntas que podem se beneficiar de imagens, além de utilizar CLIP, metadados, contexto textual e filtros de rejeição para evitar que capas de manuais, figuras genéricas ou imagens de procedimentos incorretos sejam exibidas como resposta. Essa etapa ainda depende da qualidade de extração dos PDFs, mas representa um avanço importante para consultas sobre localização de componentes.
+
+O trabalho também estruturou uma proposta de avaliação comparativa com grandes modelos de linguagem. Essa comparação ainda será realizada em uma etapa posterior, pois o sistema está em fase de aperfeiçoamento. A intenção é comparar respostas produzidas pelo sistema com acesso aos manuais oficiais com respostas de modelos generalistas sem acesso direto a esses documentos. Dessa forma, será possível observar em quais situações a recuperação de fontes específicas oferece vantagem sobre o conhecimento geral do modelo.
+
+As principais limitações atuais estão relacionadas à ausência de uma avaliação quantitativa consolidada, à necessidade de ampliar o conjunto de perguntas de teste, à calibração do score de confiança e à dependência da qualidade dos documentos processados. Também há espaço para melhorar a extração de tabelas, a associação entre figuras e legendas, o reranqueamento textual e a validação multimodal das respostas.
+
+Como trabalhos futuros, pretende-se executar a comparação experimental com grandes modelos de linguagem, construir um conjunto de referência com perguntas e respostas baseadas nos manuais, incluir avaliação humana, testar novos modelos locais, investigar rerankers mais robustos, avaliar alternativas ao FAISS, como Qdrant e ColBERT, e aperfeiçoar o uso de OCR e modelos multimodais locais.
+
+Conclui-se que o uso de RAG no setor automotivo é uma abordagem promissora para aproximar usuários de informações técnicas oficiais. O valor do sistema não está apenas na geração de texto, mas na capacidade de recuperar a fonte correta, preservar o contexto da conversa, selecionar evidências relevantes e apresentar a resposta de forma prática. Assim, este projeto estabelece uma base para investigar como sistemas especializados, mesmo executados localmente, podem oferecer respostas mais úteis em domínios nos quais a documentação oficial é essencial.

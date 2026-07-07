@@ -1,0 +1,12 @@
+% resumo em português
+\setlength{\absparsep}{18pt}
+
+\begin{resumo}
+Este trabalho apresenta o desenvolvimento de um sistema de suporte informacional para o setor automotivo baseado em \textit{Retrieval-Augmented Generation} (RAG). A proposta surgiu a partir de uma dificuldade prática: informações importantes sobre veículos, como especificações de óleo, localização de componentes, procedimentos de verificação, avisos de segurança e diagramas, costumam estar presentes em manuais oficiais, mas distribuídas em documentos extensos e de consulta pouco imediata. Nesse contexto, o sistema desenvolvido busca aproximar o usuário dessas informações por meio de uma interface conversacional, mantendo as respostas vinculadas aos trechos e imagens recuperados dos manuais.
+
+A solução foi implementada com execução local e integra frontend em Next.js, backend em NestJS, persistência de chats com Prisma e PostgreSQL, scripts Python para recuperação documental, índice vetorial FAISS, busca híbrida com sinais vetoriais, lexicais e regras de domínio, além de geração de respostas por meio do Ollama com o modelo DeepSeek R1 8B. Durante o desenvolvimento, o projeto incorporou memória conversacional, reescrita de consultas, detecção de perguntas visuais, seleção de imagens com CLIP local, reranqueamento de imagens com prompts positivos e negativos e mecanismos de pós-processamento para reduzir respostas genéricas ou não fundamentadas.
+
+O trabalho também propõe uma análise comparativa com grandes modelos de linguagem quando estes não possuem acesso direto aos manuais. Essa comparação ainda será executada em etapa posterior, pois o sistema permanece em aperfeiçoamento, principalmente quanto à recuperação visual, calibração de confiança e construção do conjunto de avaliação. Assim, a contribuição principal desta etapa é a construção e documentação de uma arquitetura funcional de RAG automotivo, capaz de combinar texto, metadados, histórico conversacional e imagens dos manuais para apoiar respostas mais rastreáveis e contextualizadas.
+
+\textbf{Palavras-chaves}: recuperação aumentada por geração. manuais automotivos. modelos de linguagem. FAISS. CLIP. Ollama.
+\end{resumo}

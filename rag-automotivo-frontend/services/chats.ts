@@ -11,13 +11,32 @@ export type RagSource = {
   image_paths: string[];
   metadata?: {
     brand?: string;
+    vehicle_make?: string;
+    vehicle_model?: string;
+    vehicle_year?: number;
+    document_type?: string;
+    content_type?: string;
+    entities?: string[];
     faiss_vector_id?: number;
     image_count?: number;
     split_reason?: string;
   };
+  retrieval_scores?: {
+    vector?: number;
+    bm25?: number;
+    lexical?: number;
+    domain?: number;
+    reranker?: number;
+    metadata?: number;
+    final?: number;
+  };
   clip_results?: {
     imagePath: string;
     score: number;
+    positiveScore?: number;
+    positiveLabel?: string;
+    negativeScore?: number;
+    negativeLabel?: string;
     page?: number;
     source?: string;
     chunkId?: string;
@@ -28,6 +47,53 @@ export type MessageMetadata = {
   sources?: RagSource[];
   return_images?: boolean;
   visual_intent?: boolean;
+  confidence?: number;
+  status?: string;
+  reasoning_type?: string;
+  resolved_query?: string;
+  is_follow_up?: boolean;
+  conversation_state?: {
+    lastUserQuestion: string;
+    pendingQuestion: string;
+    resolvedQuery: string;
+    intent: string;
+    vehicle: {
+      brand?: string;
+      model?: string;
+      year?: string;
+      engine?: string;
+      version?: string;
+    };
+    missingSlots: string[];
+    lastAnswerNeededClarification: boolean;
+  };
+  vehicle_detected?: {
+    make?: string;
+    model?: string;
+    year?: number;
+    engine?: string;
+    certainty: number;
+  };
+  citations?: {
+    claim: string;
+    sourceIndex: number;
+    page: number;
+    document: string;
+    quote?: string;
+  }[];
+  images?: {
+    imagePath: string;
+    score: number;
+    positiveScore?: number;
+    positiveLabel?: string;
+    negativeScore?: number;
+    negativeLabel?: string;
+    page?: number;
+    source?: string;
+    chunkId?: string;
+  }[];
+  warnings?: string[];
+  missing_information?: string[];
 };
 
 export type ChatMessage = {

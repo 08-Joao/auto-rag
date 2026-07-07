@@ -1,0 +1,82 @@
+\providecommand{\abntreprintinfo}[1]{%
+ \citeonline{#1}}
+\setlength{\labelsep}{0pt}\begin{thebibliography}{}
+\providecommand{\abntrefinfo}[3]{}
+\providecommand{\abntbstabout}[1]{}
+\abntbstabout{v-1.9.7 }
+
+\bibitem[Gao et al. 2023]{gao2023rag}
+\abntrefinfo{Gao et al.}{GAO et al.}{2023}
+{GAO, Y. et al. \emph{Retrieval-Augmented Generation for Large Language Models:
+  A Survey}. 2023. ArXiv preprint arXiv:2312.10997.}
+
+\bibitem[Hernandez-Salinas et al. 2024]{hernandez2024idas}
+\abntrefinfo{Hernandez-Salinas et al.}{HERNANDEZ-SALINAS et al.}{2024}
+{HERNANDEZ-SALINAS, B. et al. Idas: Intelligent driving assistance system using
+  rag.
+\emph{IEEE Open Journal of Vehicular Technology}, v.~5, p. 1139--1165, 2024.}
+
+\bibitem[Huang et al. 2023]{huang2023hallucination}
+\abntrefinfo{Huang et al.}{HUANG et al.}{2023}
+{HUANG, L. et al. \emph{A Survey on Hallucination in Large Language Models:
+  Principles, Taxonomy, Challenges, and Open Questions}. 2023. ArXiv preprint
+  arXiv:2311.05232.}
+
+\bibitem[Johnson, Douze e Jegou 2021]{johnson2021faiss}
+\abntrefinfo{Johnson, Douze e Jegou}{JOHNSON; DOUZE; JEGOU}{2021}
+{JOHNSON, J.; DOUZE, M.; JEGOU, H. Billion-scale similarity search with gpus.
+\emph{IEEE Transactions on Big Data}, v.~7, n.~3, p. 535--547, 2021.}
+
+\bibitem[Kumar et al. 2024]{kumar2024prompt}
+\abntrefinfo{Kumar et al.}{KUMAR et al.}{2024}
+{KUMAR, A. et al. \emph{Prompt Injection Attacks Against Large Language
+  Models}. 2024. ArXiv preprint arXiv:2406.14199.}
+
+\bibitem[Lewis et al. 2020]{lewis2020rag}
+\abntrefinfo{Lewis et al.}{LEWIS et al.}{2020}
+{LEWIS, P. et al. Retrieval-augmented generation for knowledge-intensive nlp
+  tasks. In:  \emph{Advances in Neural Information Processing Systems}. [S.l.:
+  s.n.], 2020. p. 9459--9474.}
+
+\bibitem[Manning, Raghavan e Schutze 2008]{manning2008information}
+\abntrefinfo{Manning, Raghavan e Schutze}{MANNING; RAGHAVAN; SCHUTZE}{2008}
+{MANNING, C.~D.; RAGHAVAN, P.; SCHUTZE, H. \emph{Introduction to Information
+  Retrieval}. Cambridge: Cambridge University Press, 2008.}
+
+\bibitem[Medeiros et al. 2023]{medeiros2023automotive}
+\abntrefinfo{Medeiros et al.}{MEDEIROS et al.}{2023}
+{MEDEIROS, T. et al. Analysis of language-model-powered chatbots for query
+  resolution in pdf-based automotive manuals.
+\emph{Vehicles}, v.~5, n.~4, p. 1384--1399, 2023.}
+
+\bibitem[Park, Jeong e Kim 2024]{park2024maqa}
+\abntrefinfo{Park, Jeong e Kim}{PARK; JEONG; KIM}{2024}
+{PARK, C.; JEONG, S.; KIM, J. Maqa: A manual text-based approach for
+  car-specific question answering.
+\emph{Electronics}, v.~13, n.~24, p.~4972, 2024.}
+
+\bibitem[Radford et al. 2021]{radford2021clip}
+\abntrefinfo{Radford et al.}{RADFORD et al.}{2021}
+{RADFORD, A. et al. Learning transferable visual models from natural language
+  supervision. In:  \emph{Proceedings of the 38th International Conference on
+  Machine Learning}. [S.l.: s.n.], 2021. p. 8748--8763.}
+
+\bibitem[Reimers e Gurevych 2019]{reimers2019sentencebert}
+\abntrefinfo{Reimers e Gurevych}{REIMERS; GUREVYCH}{2019}
+{REIMERS, N.; GUREVYCH, I. Sentence-bert: Sentence embeddings using siamese
+  bert-networks. In:  \emph{Proceedings of the 2019 Conference on Empirical
+  Methods in Natural Language Processing}. [S.l.: s.n.], 2019. p. 3982--3992.}
+
+\bibitem[Vaswani et al. 2017]{vaswani2017attention}
+\abntrefinfo{Vaswani et al.}{VASWANI et al.}{2017}
+{VASWANI, A. et al. Attention is all you need. In:  \emph{Advances in Neural
+  Information Processing Systems}. [S.l.: s.n.], 2017.}
+
+\bibitem[Yildirim e Samli 2025]{yildirim2025rag}
+\abntrefinfo{Yildirim e Samli}{YILDIRIM; SAMLI}{2025}
+{YILDIRIM, S.; SAMLI, R. A rag-based automotive sector ai assistant for
+  enhanced information retrieval. In:  \emph{The Eurasia Proceedings of
+  Science, Technology, Engineering and Mathematics}. [S.l.: s.n.], 2025. v.~34,
+  p. 20--27.}
+
+\end{thebibliography}
