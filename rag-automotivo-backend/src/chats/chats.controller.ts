@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Req,
   Res,
@@ -16,6 +17,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { AuthenticatedUser } from '../auth/types/authenticated-request';
 import { ChatsService } from './chats.service';
 import { SendMessageDto } from './dto/send-message.dto';
+import { UpdateChatRerankerDto } from './dto/update-chat-reranker.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('chats')
@@ -40,6 +42,15 @@ export class ChatsController {
   @Delete(':id')
   remove(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.chatsService.remove(id, user.id);
+  }
+
+  @Patch(':id/reranker')
+  updateReranker(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: UpdateChatRerankerDto,
+  ) {
+    return this.chatsService.updateReranker(id, user.id, dto.visualReranker);
   }
 
   @Post(':id/messages')

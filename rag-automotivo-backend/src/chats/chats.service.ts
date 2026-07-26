@@ -13,10 +13,13 @@ import type {
   RagChatHistoryMessage,
   RagConversationState,
   RagSource,
+  VisualReranker,
 } from '../rag/types';
 
 type PersistedChat = Awaited<ReturnType<ChatsService['findOne']>>;
-type PersistedUserMessage = Awaited<ReturnType<ChatsService['createUserMessage']>>;
+type PersistedUserMessage = Awaited<
+  ReturnType<ChatsService['createUserMessage']>
+>;
 
 export type ChatStreamEvent =
   | { type: 'user_message'; message: PersistedUserMessage }
@@ -45,6 +48,7 @@ export class ChatsService {
       select: {
         id: true,
         title: true,
+        visualReranker: true,
         createdAt: true,
         updatedAt: true,
         message: {
@@ -100,6 +104,20 @@ export class ChatsService {
     return { id };
   }
 
+  async updateReranker(
+    id: string,
+    userId: string,
+    visualReranker: VisualReranker,
+  ) {
+    await this.getOwnedChat(id, userId);
+
+    return this.prisma.chats.update({
+      where: { id },
+      data: { visualReranker },
+      select: this.chatWithMessagesSelect(),
+    });
+  }
+
   async sendMessage(id: string, userId: string, content: string) {
     const chat = await this.getOwnedChat(id, userId);
     const trimmedContent = content.trim();
@@ -108,6 +126,7 @@ export class ChatsService {
     const ragAnswer = await this.ragService.answer(trimmedContent, history, {
       chatId: id,
       conversationState: conversationState ?? undefined,
+      visualReranker: this.normalizeVisualReranker(chat.visualReranker),
     });
     const shouldUpdateTitle = chat._count.message === 0;
 
@@ -152,7 +171,11 @@ export class ChatsService {
     const shouldUpdateTitle = chat._count.message === 0;
     const history = await this.getRecentHistory(id);
     const conversationState = await this.getLatestConversationState(id);
-    const userMessage = await this.createUserMessage(id, userId, trimmedContent);
+    const userMessage = await this.createUserMessage(
+      id,
+      userId,
+      trimmedContent,
+    );
     const assistantMessageId = randomUUID();
 
     yield { type: 'user_message', message: userMessage };
@@ -169,7 +192,11 @@ export class ChatsService {
     for await (const event of this.ragService.streamAnswer(
       trimmedContent,
       history,
-      { chatId: id, conversationState: conversationState ?? undefined },
+      {
+        chatId: id,
+        conversationState: conversationState ?? undefined,
+        visualReranker: this.normalizeVisualReranker(chat.visualReranker),
+      },
       signal,
     )) {
       if (signal?.aborted) {
@@ -227,6 +254,7 @@ export class ChatsService {
           conversationState: event.conversationState,
           resolvedQuery: event.resolvedQuery,
           isFollowUp: event.isFollowUp,
+          visualReranker: event.visualReranker,
         };
       }
     }
@@ -269,6 +297,7 @@ export class ChatsService {
         id: true,
         userId: true,
         title: true,
+        visualReranker: true,
         _count: { select: { message: true } },
       },
     });
@@ -289,6 +318,7 @@ export class ChatsService {
       id: true,
       userId: true,
       title: true,
+      visualReranker: true,
       createdAt: true,
       updatedAt: true,
       message: {
@@ -309,7 +339,17 @@ export class ChatsService {
     return title.length >= 8 ? title : 'Novo diagnostico';
   }
 
-  private async createUserMessage(chatId: string, userId: string, content: string) {
+  private normalizeVisualReranker(
+    value: string | null | undefined,
+  ): VisualReranker {
+    return value === 'qwen' ? 'qwen' : 'clip';
+  }
+
+  private async createUserMessage(
+    chatId: string,
+    userId: string,
+    content: string,
+  ) {
     return this.prisma.message.create({
       data: {
         chatId,
@@ -327,11 +367,12 @@ export class ChatsService {
     });
   }
 
-  private async getRecentHistory(chatId: string): Promise<RagChatHistoryMessage[]> {
+  private async getRecentHistory(
+    chatId: string,
+  ): Promise<RagChatHistoryMessage[]> {
     const messages = await this.prisma.message.findMany({
       where: { chatId },
       orderBy: { createdAt: 'desc' },
-      take: 12,
       select: {
         content: true,
         sender: true,
@@ -393,6 +434,7 @@ export class ChatsService {
         : [],
       lastAnswerNeededClarification:
         candidate.lastAnswerNeededClarification === true,
+      messageIntent: candidate.messageIntent,
     };
   }
 
@@ -414,6 +456,7 @@ export class ChatsService {
       conversation_state: ragAnswer.conversationState,
       resolved_query: ragAnswer.resolvedQuery,
       is_follow_up: ragAnswer.isFollowUp,
+      visual_reranker: ragAnswer.visualReranker,
       sources: sources.map((source) => ({
         score: source.score,
         chunk_id: source.chunk_id,

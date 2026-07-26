@@ -50,7 +50,9 @@ describe('VisualImageService image reranker', () => {
           'Engine oil filler cap',
           'Main components for checking and refilling',
         ].join('\n'),
-        image_paths: ['rag-automotivo-backend/tmp-reranker-images/hood-release.jpg'],
+        image_paths: [
+          'rag-automotivo-backend/tmp-reranker-images/hood-release.jpg',
+        ],
         metadata: {},
       },
       {
@@ -60,7 +62,7 @@ describe('VisualImageService image reranker', () => {
         page_start: 1,
         page_end: 1,
         section_title: 'Cover',
-        text: '2010 Audi A4 Owner\'s Manual',
+        text: "2010 Audi A4 Owner's Manual",
         image_paths: ['rag-automotivo-backend/tmp-reranker-images/cover.jpg'],
         metadata: {},
       },
@@ -72,7 +74,9 @@ describe('VisualImageService image reranker', () => {
         page_end: 2,
         section_title: 'Vehicle overview',
         text: 'Audi A4 exterior vehicle overview',
-        image_paths: ['rag-automotivo-backend/tmp-reranker-images/generic-car.jpg'],
+        image_paths: [
+          'rag-automotivo-backend/tmp-reranker-images/generic-car.jpg',
+        ],
         metadata: {},
       },
       {
@@ -106,7 +110,8 @@ describe('VisualImageService image reranker', () => {
           page: 1,
         },
         {
-          imagePath: 'rag-automotivo-backend/tmp-reranker-images/hood-release.jpg',
+          imagePath:
+            'rag-automotivo-backend/tmp-reranker-images/hood-release.jpg',
           score: 0.92,
           positiveScore: 0.92,
           negativeScore: 0.95,
@@ -114,7 +119,8 @@ describe('VisualImageService image reranker', () => {
           page: 256,
         },
         {
-          imagePath: 'rag-automotivo-backend/tmp-reranker-images/generic-car.jpg',
+          imagePath:
+            'rag-automotivo-backend/tmp-reranker-images/generic-car.jpg',
           score: 0.9,
           page: 2,
         },
@@ -136,8 +142,8 @@ describe('VisualImageService image reranker', () => {
         'rag-automotivo-backend/tmp-reranker-images/empty.jpg',
       ]),
     );
-    expect(result.rejectedImages.map((image) => image.reason).join(' ')).toMatch(
-      /capa|capo|generica|vazia|quebrada|inacessivel/i,
-    );
+    expect(
+      result.rejectedImages.map((image) => image.reason).join(' '),
+    ).toMatch(/capa|capo|generica|vazia|quebrada|inacessivel/i);
   });
 });

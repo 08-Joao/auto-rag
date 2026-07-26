@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
@@ -24,7 +24,11 @@ export class RagController {
     }
 
     const absolutePath = resolve(this.projectRoot, assetPath);
-    const allowedRoot = resolve(this.projectRoot, 'rag_chunks_output', 'images');
+    const allowedRoot = resolve(
+      this.projectRoot,
+      'rag_chunks_output',
+      'images',
+    );
 
     if (!absolutePath.startsWith(allowedRoot) || !existsSync(absolutePath)) {
       throw new BadRequestException('Imagem nao encontrada.');

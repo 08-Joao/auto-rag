@@ -116,7 +116,9 @@ export class VisualImageService {
       return {
         ...source,
         image_paths: imagePaths,
-        clip_results: imagePaths.map((imagePath) => approvedByPath.get(imagePath)!),
+        clip_results: imagePaths.map(
+          (imagePath) => approvedByPath.get(imagePath)!,
+        ),
         metadata: {
           ...source.metadata,
           image_count: imagePaths.length,
@@ -149,18 +151,28 @@ export class VisualImageService {
         isRelevant: true,
         reason: this.buildImageSelectionReason(candidate, input.component),
         confidence: Number(
-          Math.max(0, Math.min(0.99, 0.55 * candidate.clipScore + 0.45 * candidate.textScore)).toFixed(2),
+          Math.max(
+            0,
+            Math.min(
+              0.99,
+              0.55 * candidate.clipScore + 0.45 * candidate.textScore,
+            ),
+          ).toFixed(2),
         ),
       }));
 
-    const selectedPaths = new Set(selectedImages.map((image) => image.imagePath));
+    const selectedPaths = new Set(
+      selectedImages.map((image) => image.imagePath),
+    );
     const rejectedImages = candidates
       .filter((candidate) => !selectedPaths.has(candidate.imagePath))
       .map((candidate) => ({
         imageId: candidate.imageId,
         imagePath: candidate.imagePath,
         page: candidate.page,
-        reason: candidate.rejectionReason || 'Imagem abaixo do limiar final de relevancia.',
+        reason:
+          candidate.rejectionReason ||
+          'Imagem abaixo do limiar final de relevancia.',
       }));
 
     this.logger.debug(
@@ -201,7 +213,9 @@ export class VisualImageService {
       return {
         ...source,
         image_paths: imagePaths,
-        clip_results: imagePaths.map((imagePath) => approvedByPath.get(imagePath)!),
+        clip_results: imagePaths.map(
+          (imagePath) => approvedByPath.get(imagePath)!,
+        ),
         metadata: {
           ...source.metadata,
           image_count: imagePaths.length,
@@ -233,12 +247,13 @@ export class VisualImageService {
     return existsSync(localVenvPython) ? localVenvPython : 'python3';
   }
 
-  private buildCandidates(question: string, sources: RagSource[]): ClipCandidate[] {
+  private buildCandidates(
+    question: string,
+    sources: RagSource[],
+  ): ClipCandidate[] {
     const candidates: ClipCandidate[] = [];
     const seenPaths = new Set<string>();
-    const requestedYears = new Set(
-      question.match(/\b(?:19|20)\d{2}\b/g) ?? [],
-    );
+    const requestedYears = new Set(question.match(/\b(?:19|20)\d{2}\b/g) ?? []);
 
     for (const source of sources) {
       if (
@@ -273,7 +288,10 @@ export class VisualImageService {
   ): ImageRerankCandidate[] {
     const candidates: ImageRerankCandidate[] = [];
     const seen = new Set<string>();
-    const queryTerms = this.extractQueryTerms(input.resolvedQuery, input.component);
+    const queryTerms = this.extractQueryTerms(
+      input.resolvedQuery,
+      input.component,
+    );
 
     for (const source of input.sources) {
       for (const imagePath of source.image_paths) {
@@ -358,7 +376,8 @@ export class VisualImageService {
     ) {
       return {
         isRelevant: false,
-        rejectionReason: 'Imagem e capa do manual ou pagina inicial sem relacao com a peca.',
+        rejectionReason:
+          'Imagem e capa do manual ou pagina inicial sem relacao com a peca.',
       };
     }
 
@@ -370,7 +389,8 @@ export class VisualImageService {
     ) {
       return {
         isRelevant: false,
-        rejectionReason: 'Imagem parece ser generica do veiculo/manual, sem evidência da tampa de oleo.',
+        rejectionReason:
+          'Imagem parece ser generica do veiculo/manual, sem evidência da tampa de oleo.',
       };
     }
 
@@ -398,7 +418,8 @@ export class VisualImageService {
     if (input.textScore < 0.42) {
       return {
         isRelevant: false,
-        rejectionReason: 'Sem OCR, legenda ou contexto textual suficiente relacionado a tampa/bocal de oleo.',
+        rejectionReason:
+          'Sem OCR, legenda ou contexto textual suficiente relacionado a tampa/bocal de oleo.',
       };
     }
 
@@ -413,7 +434,8 @@ export class VisualImageService {
     if (!hasComponentEvidence || !hasEngineContext) {
       return {
         isRelevant: false,
-        rejectionReason: 'Nao ha evidencia textual e visual conjunta da peca perguntada.',
+        rejectionReason:
+          'Nao ha evidencia textual e visual conjunta da peca perguntada.',
       };
     }
 
@@ -451,9 +473,14 @@ export class VisualImageService {
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
-    const figureIndex = lines.findIndex((line) => /\b(fig\.?|figure)\s*\d+/i.test(line));
+    const figureIndex = lines.findIndex((line) =>
+      /\b(fig\.?|figure)\s*\d+/i.test(line),
+    );
     if (figureIndex >= 0) {
-      return this.truncate(lines.slice(figureIndex, figureIndex + 6).join(' '), 500);
+      return this.truncate(
+        lines.slice(figureIndex, figureIndex + 6).join(' '),
+        500,
+      );
     }
 
     const fileHint = imagePath.split('/').pop() ?? imagePath;
@@ -465,9 +492,13 @@ export class VisualImageService {
       return 0;
     }
 
-    const matches = [...queryTerms].filter((term) => text.includes(term)).length;
+    const matches = [...queryTerms].filter((term) =>
+      text.includes(term),
+    ).length;
     const componentScore = Math.min(0.55, matches * 0.14);
-    const figureScore = /\b(fig|figure|diagrama|layout|typical layout)\b/i.test(text)
+    const figureScore = /\b(fig|figure|diagrama|layout|typical layout)\b/i.test(
+      text,
+    )
       ? 0.12
       : 0;
     const engineScore =
@@ -477,7 +508,9 @@ export class VisualImageService {
         ? 0.16
         : 0;
     const labelScore =
-      /(item|@|\(d\)|\(3\)|\b3\b|seta|identifica|filler cap|tampa|bocal)/i.test(text)
+      /(item|@|\(d\)|\(3\)|\b3\b|seta|identifica|filler cap|tampa|bocal)/i.test(
+        text,
+      )
         ? 0.12
         : 0;
     const negative =
@@ -487,7 +520,13 @@ export class VisualImageService {
         : 0;
 
     return Number(
-      Math.max(0, Math.min(1, componentScore + figureScore + engineScore + labelScore - negative)).toFixed(2),
+      Math.max(
+        0,
+        Math.min(
+          1,
+          componentScore + figureScore + engineScore + labelScore - negative,
+        ),
+      ).toFixed(2),
     );
   }
 
@@ -613,6 +652,8 @@ export class VisualImageService {
   }
 
   private truncate(text: string, maxLength: number): string {
-    return text.length <= maxLength ? text : `${text.slice(0, maxLength).trim()}...`;
+    return text.length <= maxLength
+      ? text
+      : `${text.slice(0, maxLength).trim()}...`;
   }
 }

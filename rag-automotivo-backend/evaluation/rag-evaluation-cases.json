@@ -1,0 +1,12 @@
+[
+  {"query":"Onde fica a tampa de combustível?","expectedConcept":"fuel_filler"},
+  {"query":"Onde fica a tampa de óleo?","expectedConcept":"oil_filler"},
+  {"query":"Onde fica o reservatório do fluido de freio?","expectedConcept":"brake_fluid"},
+  {"query":"Onde fica o reservatório do líquido de arrefecimento?","expectedConcept":"coolant"},
+  {"query":"Onde fica a vareta de óleo?","expectedConcept":"oil_dipstick"},
+  {"query":"Onde fica a bateria?","expectedConcept":"battery"},
+  {"query":"Como abrir a portinhola do tanque?","expectedConcept":"fuel_filler"},
+  {"query":"Qual a capacidade do tanque?","expectedConcept":"tank_capacity"},
+  {"query":"Qual óleo utilizar?","expectedConcept":"oil_specification"},
+  {"query":"Qual combustível utilizar?","expectedConcept":"fuel_specification"}
+]

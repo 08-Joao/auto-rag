@@ -9,6 +9,7 @@ import json
 import math
 import re
 import sys
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from typing import Any
 import faiss
 import numpy as np
 from sentence_transformers import CrossEncoder, SentenceTransformer
+from model_runtime import configure_determinism, log_runtime, memory_snapshot, resolve_device
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,6 +35,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bm25-top-k", type=int, default=40, help="Quantidade de candidatos BM25.")
     parser.add_argument("--reranker-model", default="", help="Cross-encoder local opcional para reranking.")
     parser.add_argument("--reranker-top-k", type=int, default=40, help="Quantidade maxima de candidatos para reranker.")
+    parser.add_argument("--embedding-device", default="cpu")
+    parser.add_argument("--reranker-device", default="cpu")
+    parser.add_argument("--minimum-free-vram-mb", type=int, default=2048)
+    parser.add_argument("--vehicle-brand", default="")
+    parser.add_argument("--vehicle-model", default="")
+    parser.add_argument("--vehicle-year", default="")
+    parser.add_argument("--vehicle-engine", default="")
+    parser.add_argument("--vehicle-version", default="")
     return parser.parse_args()
 
 
@@ -63,6 +73,10 @@ def infer_vehicle(document_name: str, metadata: dict[str, Any]) -> dict[str, Any
             midpoint = len(model_parts) // 2
             if len(model_parts) % 2 == 0 and model_parts[:midpoint] == model_parts[midpoint:]:
                 model_parts = model_parts[:midpoint]
+            # Alguns nomes possuem "audi-a4-audi-a4"; mantenha apenas a
+            # primeira ocorrência do modelo ao inferir metadados.
+            if brand in model_parts[1:]:
+                model_parts = model_parts[:model_parts.index(brand, 1)]
             model = " ".join(model_parts)
 
     return {
@@ -143,7 +157,12 @@ def tokenize(text: str) -> list[str]:
     return re.findall(r"[\wÀ-ÿ]+", text.lower())
 
 
-def bm25_scores(metadata: list[dict[str, Any]], query: str, limit: int) -> list[tuple[float, int]]:
+def bm25_scores(
+    metadata: list[dict[str, Any]],
+    query: str,
+    limit: int,
+    eligible_ids: set[int] | None = None,
+) -> list[tuple[float, int]]:
     if limit <= 0:
         return []
 
@@ -165,6 +184,8 @@ def bm25_scores(metadata: list[dict[str, Any]], query: str, limit: int) -> list[
     query_counter = Counter(query_terms)
 
     for index, terms in enumerate(doc_terms):
+        if eligible_ids is not None and index not in eligible_ids:
+            continue
         if not terms:
             continue
         term_counts = Counter(terms)
@@ -216,6 +237,17 @@ def is_oil_query(query: str) -> bool:
             "viscosidade",
             "viscosity",
         ]
+    )
+
+
+def is_fuel_filler_query(query: str) -> bool:
+    normalized = query.lower()
+    return bool(
+        re.search(
+            r"(?:fuel|petrol|gasoline|combust[ií]vel|gasolina|tanque).{0,30}(?:cap|flap|door|neck|tampa|portinhola|bocal)"
+            r"|(?:cap|flap|door|neck|tampa|portinhola|bocal).{0,30}(?:fuel|petrol|gasoline|combust[ií]vel|gasolina|tanque)",
+            normalized,
+        )
     )
 
 
@@ -312,6 +344,30 @@ def oil_lexical_score(item: dict[str, Any], query: str) -> float:
     return score
 
 
+def fuel_filler_lexical_score(item: dict[str, Any], query: str) -> float:
+    if not is_fuel_filler_query(query):
+        return 0.0
+    text = item.get("text", "").lower()
+    score = 0.0
+    for term, weight in [
+        ("fuel filler flap", 0.5),
+        ("fuel filler door", 0.5),
+        ("fuel tank flap", 0.5),
+        ("tank cap", 0.4),
+        ("fuel filler cap", 0.5),
+        ("refuelling", 0.25),
+        ("refueling", 0.25),
+    ]:
+        if term in text:
+            score += weight
+    if re.search(r"\b(?:engine\s+)?oil filler (?:cap|neck)\b", text):
+        return 0.0
+    years = query_years(query)
+    if years and any(year in (item.get("document_name") or "") for year in years):
+        score += 0.25
+    return min(score, 1.0)
+
+
 def visual_location_lexical_score(item: dict[str, Any], query: str) -> float:
     text = item.get("text", "").lower()
     normalized_query = query.lower()
@@ -320,7 +376,7 @@ def visual_location_lexical_score(item: dict[str, Any], query: str) -> float:
     image_count = len(item.get("image_paths", []))
     is_oil_component_location = any(
         term in normalized_query
-        for term in ["oleo", "óleo", "oil", "tampa", "filler"]
+        for term in ["oleo", "óleo", "engine oil"]
     )
     has_oil_component_evidence = any(
         term in text
@@ -383,12 +439,15 @@ def lexical_supplements(
     query: str,
     existing_vector_ids: set[int],
     limit: int,
+    eligible_ids: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     if limit <= 0:
         return []
 
     candidates = []
     for vector_id, item in enumerate(metadata):
+        if eligible_ids is not None and vector_id not in eligible_ids:
+            continue
         if vector_id in existing_vector_ids:
             continue
 
@@ -397,6 +456,8 @@ def lexical_supplements(
             score = max(score, wheel_lexical_score(item, query))
         if is_visual_location_query(query):
             score = max(score, visual_location_lexical_score(item, query))
+        if is_fuel_filler_query(query):
+            score = max(score, fuel_filler_lexical_score(item, query))
         if is_oil_query(query) and not is_visual_location_query(query):
             score = max(score, oil_lexical_score(item, query))
 
@@ -439,6 +500,8 @@ def domain_score(item: dict[str, Any], query: str) -> float:
         score = max(score, wheel_lexical_score(item, query))
     if is_visual_location_query(query):
         score = max(score, visual_location_lexical_score(item, query))
+    if is_fuel_filler_query(query):
+        score = max(score, fuel_filler_lexical_score(item, query))
     if is_oil_query(query) and not is_visual_location_query(query):
         score = max(score, oil_lexical_score(item, query))
     return min(score, 1.0)
@@ -452,6 +515,11 @@ def merge_candidates(
     query: str,
 ) -> list[dict[str, Any]]:
     merged: dict[int, dict[str, Any]] = {}
+    vector_ranks = {vector_id: rank for rank, (_, vector_id) in enumerate(vector_hits, start=1)}
+    bm25_ranks = {vector_id: rank for rank, (_, vector_id) in enumerate(bm25_hits, start=1)}
+    lexical_ranks = {
+        vector_id: rank for rank, (_, vector_id, _) in enumerate(lexical_hits, start=1)
+    }
 
     def ensure(vector_id: int) -> dict[str, Any]:
         if vector_id not in merged:
@@ -473,42 +541,127 @@ def merge_candidates(
 
     for entry in merged.values():
         scores = entry["scores"]
+        vector_id = entry["vector_id"]
+        rrf = sum(
+            1.0 / (60 + rank)
+            for rank in (
+                vector_ranks.get(vector_id),
+                bm25_ranks.get(vector_id),
+                lexical_ranks.get(vector_id),
+            )
+            if rank is not None
+        )
+        scores["rrf"] = min(1.0, rrf / (3.0 / 61.0))
         scores["metadata"] = metadata_score(entry["item"], query)
         scores["domain"] = max(scores.get("lexical", 0.0), domain_score(entry["item"], query))
         scores["final"] = (
-            0.36 * scores.get("vector", 0.0)
-            + 0.18 * scores.get("bm25", 0.0)
-            + 0.28 * scores.get("domain", 0.0)
-            + 0.18 * scores.get("metadata", 0.0)
+            0.55 * scores["rrf"]
+            + 0.25 * scores.get("domain", 0.0)
+            + 0.20 * scores.get("metadata", 0.0)
         )
 
-    return sorted(merged.values(), key=lambda entry: entry["scores"]["final"], reverse=True)
+    return sorted(
+        merged.values(),
+        key=lambda entry: (-entry["scores"]["final"], entry["vector_id"]),
+    )
 
 
-def apply_reranker(candidates: list[dict[str, Any]], query: str, model_name: str, limit: int) -> None:
+def apply_reranker(
+    candidates: list[dict[str, Any]],
+    query: str,
+    model_name: str,
+    limit: int,
+    device: str,
+) -> tuple[str, str | None]:
     if not model_name or not candidates:
-        return
+        return "DISABLED", None
 
-    rerank_candidates = candidates[: max(1, limit)]
+    try:
+        rerank_candidates = candidates[: max(1, limit)]
+        with contextlib.redirect_stdout(sys.stderr):
+            reranker = CrossEncoder(model_name, device=device)
+            predictions = reranker.predict(
+                [(query, candidate["item"].get("text", "")[:4000]) for candidate in rerank_candidates]
+            )
+
+        values = [float(value) for value in predictions]
+        if not values:
+            return "FALLBACK", "EMPTY_RERANKER_OUTPUT"
+        min_value = min(values)
+        max_value = max(values)
+        span = max(max_value - min_value, 1e-9)
+        for candidate, value in zip(rerank_candidates, values):
+            normalized = (value - min_value) / span
+            candidate["scores"]["reranker"] = normalized
+            candidate["scores"]["final"] = 0.58 * normalized + 0.42 * candidate["scores"].get("final", 0.0)
+        return "SUCCESS", None
+    except Exception as error:
+        reason = "CUDA_OUT_OF_MEMORY" if "out of memory" in str(error).lower() else type(error).__name__
+        log_runtime("reranker_fallback", reason=reason, message=str(error)[:500])
+        return "FALLBACK", reason
+
+
+def apply_lead_semantic_score(
+    candidates: list[dict[str, Any]],
+    query_embedding: np.ndarray,
+    embedding_model: SentenceTransformer,
+    limit: int = 80,
+) -> None:
+    """Reavalia título e início do trecho para reduzir matches incidentais em chunks longos."""
+    scoped = candidates[: max(1, limit)]
+    if not scoped:
+        return
+    lead_texts = [
+        "\n".join(
+            part
+            for part in [
+                str(candidate["item"].get("section_title") or ""),
+                str(candidate["item"].get("text") or "")[:1600],
+            ]
+            if part
+        )
+        for candidate in scoped
+    ]
     with contextlib.redirect_stdout(sys.stderr):
-        reranker = CrossEncoder(model_name)
-        predictions = reranker.predict(
-            [(query, candidate["item"].get("text", "")[:4000]) for candidate in rerank_candidates]
+        lead_embeddings = embedding_model.encode(
+            lead_texts,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            batch_size=32,
+        ).astype("float32")
+    lead_scores = lead_embeddings @ query_embedding[0]
+    for candidate, lead_score in zip(scoped, lead_scores):
+        score = max(0.0, min(1.0, float(lead_score)))
+        candidate["scores"]["lead_vector"] = score
+        candidate["scores"]["final"] = (
+            0.55 * candidate["scores"].get("final", 0.0) + 0.45 * score
         )
 
-    values = [float(value) for value in predictions]
-    if not values:
-        return
-    min_value = min(values)
-    max_value = max(values)
-    span = max(max_value - min_value, 1e-9)
-    for candidate, value in zip(rerank_candidates, values):
-        normalized = (value - min_value) / span
-        candidate["scores"]["reranker"] = normalized
-        candidate["scores"]["final"] = 0.58 * normalized + 0.42 * candidate["scores"].get("final", 0.0)
+
+def normalize_vehicle_value(value: Any) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower()))
+
+
+def vehicle_matches(item: dict[str, Any], args: argparse.Namespace) -> bool:
+    vehicle = infer_vehicle(item.get("document_name") or "", item.get("metadata", {}))
+    requested_brand = normalize_vehicle_value(args.vehicle_brand)
+    requested_model = normalize_vehicle_value(args.vehicle_model)
+    requested_year = normalize_vehicle_value(args.vehicle_year)
+    actual_brand = normalize_vehicle_value(vehicle.get("vehicle_make"))
+    actual_model = normalize_vehicle_value(vehicle.get("vehicle_model"))
+    actual_year = normalize_vehicle_value(vehicle.get("vehicle_year"))
+
+    if requested_brand and requested_brand != actual_brand:
+        return False
+    if requested_model and requested_model not in actual_model.split():
+        return False
+    if requested_year and requested_year != actual_year:
+        return False
+    return True
 
 
 def main() -> None:
+    configure_determinism()
     args = parse_args()
     output_dir = Path(args.output_dir)
     index_path = output_dir / "manual_chunks.faiss"
@@ -519,19 +672,36 @@ def main() -> None:
     if not metadata_path.exists():
         raise FileNotFoundError(f"Metadados dos chunks não encontrados: {metadata_path}")
 
+    started_at = time.monotonic()
     index = faiss.read_index(str(index_path))
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if index.ntotal != len(metadata):
+        raise ValueError(
+            f"INDEX_METADATA_COUNT_MISMATCH: index={index.ntotal}, metadata={len(metadata)}"
+        )
 
+    embedding_device = resolve_device(args.embedding_device, args.minimum_free_vram_mb)
+    reranker_device = resolve_device(args.reranker_device, args.minimum_free_vram_mb)
+    log_runtime("embedding_model_load", phase="before", **memory_snapshot(embedding_device))
     with contextlib.redirect_stdout(sys.stderr):
-        model = SentenceTransformer(args.model)
+        model = SentenceTransformer(args.model, device=embedding_device)
         query_embedding = model.encode(
             [args.query],
             convert_to_numpy=True,
             normalize_embeddings=True,
         ).astype("float32")
+    log_runtime("embedding_model_load", phase="after", **memory_snapshot(embedding_device))
+    if query_embedding.shape[1] != index.d:
+        raise ValueError(
+            f"EMBEDDING_DIMENSION_MISMATCH: query={query_embedding.shape[1]}, index={index.d}"
+        )
 
     top_k = max(1, min(args.top_k, len(metadata)))
-    scores, vector_ids = index.search(query_embedding, top_k)
+    vector_candidate_k = min(
+        len(metadata),
+        max(top_k, 200 if any([args.vehicle_brand, args.vehicle_model, args.vehicle_year]) else top_k),
+    )
+    scores, vector_ids = index.search(query_embedding, vector_candidate_k)
 
     vector_hits = []
     existing_vector_ids = set()
@@ -541,23 +711,64 @@ def main() -> None:
         existing_vector_ids.add(int(vector_id))
         vector_hits.append((float(score), int(vector_id)))
 
+    eligible_ids = {
+        vector_id
+        for vector_id, item in enumerate(metadata)
+        if vehicle_matches(item, args)
+    }
     lexical_hits = lexical_supplements(
         metadata,
         args.query,
         existing_vector_ids,
         args.lexical_supplements,
+        eligible_ids,
     )
-    bm25_hits = bm25_scores(metadata, args.query, args.bm25_top_k)
+    bm25_hits = bm25_scores(metadata, args.query, args.bm25_top_k, eligible_ids)
     candidates = merge_candidates(metadata, vector_hits, bm25_hits, lexical_hits, args.query)
-    apply_reranker(candidates, args.query, args.reranker_model, args.reranker_top_k)
-    candidates.sort(key=lambda entry: entry["scores"]["final"], reverse=True)
+    candidates = [
+        candidate for candidate in candidates if vehicle_matches(candidate["item"], args)
+    ]
+    apply_lead_semantic_score(candidates, query_embedding, model)
+    candidates.sort(key=lambda entry: (-entry["scores"]["final"], entry["vector_id"]))
+    reranker_status, reranker_reason = apply_reranker(
+        candidates,
+        args.query,
+        args.reranker_model,
+        args.reranker_top_k,
+        reranker_device,
+    )
+    candidates.sort(key=lambda entry: (-entry["scores"]["final"], entry["vector_id"]))
 
     results = [
         compact_chunk(candidate["item"], float(candidate["scores"]["final"]), candidate["scores"])
         for candidate in candidates[:top_k]
     ]
 
-    print(json.dumps({"query": args.query, "results": results}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "query": args.query,
+                "status": (
+                    "RERANKER_FAILURE_WITH_FALLBACK"
+                    if reranker_status == "FALLBACK"
+                    else ("SUCCESS_WITH_EVIDENCE" if results else "SUCCESS_WITHOUT_EVIDENCE")
+                ),
+                "results": results,
+                "warnings": ([{"code": reranker_reason}] if reranker_reason else []),
+                "diagnostics": {
+                    "embeddingModel": args.model,
+                    "embeddingDevice": embedding_device,
+                    "rerankerDevice": reranker_device,
+                    "rerankerStatus": reranker_status,
+                    "indexVectors": index.ntotal,
+                    "metadataCount": len(metadata),
+                    "indexDimension": index.d,
+                    "durationMs": round((time.monotonic() - started_at) * 1000),
+                },
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":

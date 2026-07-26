@@ -3,8 +3,10 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { OllamaService } from './ollama.service';
 import { QueryRewriterService } from './query-rewriter.service';
+import { QwenImageRerankerService } from './qwen-image-reranker.service';
 import { RagController } from './rag.controller';
 import { RagRetrieverService } from './rag-retriever.service';
+import { RelevanceValidatorService } from './relevance-validator.service';
 import { RagService } from './rag.service';
 import { VisualImageService } from './visual-image.service';
 
@@ -14,7 +16,9 @@ import { VisualImageService } from './visual-image.service';
   providers: [
     OllamaService,
     QueryRewriterService,
+    QwenImageRerankerService,
     RagRetrieverService,
+    RelevanceValidatorService,
     RagService,
     VisualImageService,
   ],

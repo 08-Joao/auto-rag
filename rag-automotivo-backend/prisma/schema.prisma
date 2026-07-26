@@ -29,9 +29,10 @@ model User {
 }
 
 model Chats {
-  id     String @id @default(uuid())
-  userId String
-  title  String @default("Novo chat")
+  id             String @id @default(uuid())
+  userId         String
+  title          String @default("Novo chat")
+  visualReranker String @default("clip")
 
   message   Message[]
   createdAt DateTime  @default(now())

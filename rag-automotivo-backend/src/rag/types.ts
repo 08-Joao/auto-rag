@@ -22,11 +22,13 @@ export type RagSource = {
   };
   retrieval_scores?: {
     vector?: number;
+    lead_vector?: number;
     bm25?: number;
     lexical?: number;
     domain?: number;
     reranker?: number;
     metadata?: number;
+    rrf?: number;
     final?: number;
   };
   clip_results?: ClipImageResult[];
@@ -34,7 +36,75 @@ export type RagSource = {
 
 export type RagRetrievalResult = {
   query: string;
+  status?: RetrievalStatus;
   results: RagSource[];
+  warnings?: RetrievalWarning[];
+  diagnostics?: Record<string, unknown>;
+};
+
+export type RetrievalStatus =
+  | 'SUCCESS_WITH_EVIDENCE'
+  | 'SUCCESS_WITHOUT_EVIDENCE'
+  | 'INDEX_UNAVAILABLE'
+  | 'EMBEDDING_FAILURE'
+  | 'RERANKER_FAILURE_WITH_FALLBACK'
+  | 'VISUAL_FAILURE_WITH_TEXT_SUCCESS'
+  | 'TIMEOUT'
+  | 'RESOURCE_EXHAUSTED'
+  | 'INTERNAL_ERROR';
+
+export type RetrievalWarning = {
+  code: string;
+  message?: string;
+};
+
+export type RetrievalErrorDetail = {
+  code: RetrievalStatus;
+  message: string;
+  retryable: boolean;
+};
+
+export type RagRetrievalFilters = {
+  brand?: string;
+  model?: string;
+  year?: string;
+  engine?: string;
+  version?: string;
+};
+
+export type RetrievedChunkEvaluation = {
+  chunkId: string;
+  semanticScore: number;
+  lexicalScore: number;
+  rerankScore?: number;
+  vehicleMatch: boolean;
+  intentMatch: boolean;
+  componentMatch: boolean;
+  isAnswerable: boolean;
+  evidenceClass?:
+    | 'DIRECTLY_ANSWERS'
+    | 'COMPLEMENTS'
+    | 'ONLY_RELATED'
+    | 'UNRELATED';
+  selectionScore?: number;
+  queryTermCoverage?: number;
+  matchedTerms?: string[];
+  rejectionReason?: string;
+};
+
+export type RagAnswerability =
+  | 'DIRECT'
+  | 'SYNTHESIZABLE'
+  | 'PARTIAL'
+  | 'NOT_ANSWERABLE';
+
+export type OpenQueryIntent = {
+  action?: string;
+  subject?: string;
+  attributes: string[];
+  constraints: string[];
+  originalMeaning: string;
+  standaloneQuery: string;
 };
 
 export type ClipImageResult = {
@@ -55,6 +125,8 @@ export type ClipImageResult = {
   reason?: string;
   confidence?: number;
 };
+
+export type VisualReranker = 'clip' | 'qwen';
 
 export type ImageRerankCandidate = {
   imageId: string;
@@ -86,7 +158,11 @@ export type RagAnswer = {
   sources: RagSource[];
   returnImages: boolean;
   confidence?: number;
-  status?: 'answered' | 'needs_clarification' | 'insufficient_context' | 'error';
+  status?:
+    | 'answered'
+    | 'needs_clarification'
+    | 'insufficient_context'
+    | 'error';
   reasoningType?: string;
   vehicleDetected?: RagVehicleDetected;
   citations?: RagCitation[];
@@ -96,11 +172,15 @@ export type RagAnswer = {
   conversationState?: RagConversationState;
   resolvedQuery?: string;
   isFollowUp?: boolean;
+  visualReranker?: VisualReranker;
+  chunkEvaluations?: RetrievedChunkEvaluation[];
+  retrievalStatus?: RetrievalStatus;
 };
 
 export type RagAnswerOptions = {
   chatId?: string;
   conversationState?: RagConversationState;
+  visualReranker?: VisualReranker;
 };
 
 export type RagConversationVehicle = {
@@ -111,6 +191,13 @@ export type RagConversationVehicle = {
   version?: string;
 };
 
+export type RagMessageIntent =
+  | 'NEW_QUESTION'
+  | 'CLARIFICATION_RESPONSE'
+  | 'CORRECTION'
+  | 'FOLLOW_UP'
+  | 'TOPIC_CHANGE';
+
 export type RagConversationState = {
   lastUserQuestion: string;
   pendingQuestion: string;
@@ -119,6 +206,7 @@ export type RagConversationState = {
   vehicle: RagConversationVehicle;
   missingSlots: string[];
   lastAnswerNeededClarification: boolean;
+  messageIntent?: RagMessageIntent;
 };
 
 export type RagQueryRewriteResult = {
@@ -130,6 +218,8 @@ export type RagQueryRewriteResult = {
   missingSlots: string[];
   pendingQuestion: string;
   lastAnswerNeededClarification: boolean;
+  messageIntent: RagMessageIntent;
+  openIntent: OpenQueryIntent;
   state: RagConversationState;
 };
 
@@ -179,6 +269,7 @@ export type RagStreamEvent =
       conversationState?: RagConversationState;
       resolvedQuery?: string;
       isFollowUp?: boolean;
+      visualReranker?: VisualReranker;
     }
   | {
       type: 'error';

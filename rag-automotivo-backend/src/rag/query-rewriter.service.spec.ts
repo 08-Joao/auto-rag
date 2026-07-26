@@ -47,7 +47,11 @@ describe('QueryRewriterService', () => {
 
   it('does not use previous context when the current message is a new complete question', () => {
     const previous = service.rewrite('Qual oleo do Audi A4 2010?');
-    const current = service.rewrite('Qual oleo do Corolla 2015?', [], previous.state);
+    const current = service.rewrite(
+      'Qual oleo do Corolla 2015?',
+      [],
+      previous.state,
+    );
 
     expect(current.isFollowUp).toBe(false);
     expect(current.resolvedQuery).toBe('Qual oleo do Corolla 2015?');
@@ -116,5 +120,62 @@ describe('QueryRewriterService', () => {
 
     expect(result.missingSlots).toEqual(['brand', 'model', 'year']);
     expect(result.lastAnswerNeededClarification).toBe(true);
+  });
+
+  it('resolves a fuel filler question after a year-only clarification', () => {
+    const first = service.rewrite('Onde fica a tampa de gasolina do Audi A4?');
+    const second = service.rewrite('2008', [], first.state);
+
+    expect(second.messageIntent).toBe('CLARIFICATION_RESPONSE');
+    expect(second.resolvedQuery).toBe(
+      'Onde fica a tampa de gasolina do Audi A4 2008?',
+    );
+    expect(second.intent).toBe('locate_component');
+  });
+
+  it('keeps the oil intent after year and engine clarification', () => {
+    const first = service.rewrite('Qual o óleo recomendado para o Civic?');
+    const second = service.rewrite('2015, 2.0.', [], first.state);
+
+    expect(second.resolvedQuery).toContain('Qual o óleo recomendado');
+    expect(second.resolvedQuery).toContain('Honda CIVIC 2015 2.0');
+    expect(second.intent).toBe('oil_specification');
+  });
+
+  it('changes topic while preserving the structured vehicle', () => {
+    const first = service.rewrite('Qual o óleo do Civic 2015 2.0?');
+    const second = service.rewrite('E onde fica a bateria?', [], first.state);
+
+    expect(second.messageIntent).toBe('TOPIC_CHANGE');
+    expect(second.resolvedQuery).toContain('bateria');
+    expect(second.resolvedQuery).toContain('Honda CIVIC 2015 2.0');
+    expect(second.resolvedQuery).not.toContain('óleo do Civic');
+  });
+
+  it('keeps a corrected year in subsequent turns', () => {
+    const first = service.rewrite('Audi A4 2008.');
+    const correction = service.rewrite('Na verdade é 2009.', [], first.state);
+    const followUp = service.rewrite(
+      'Onde fica a bateria?',
+      [],
+      correction.state,
+    );
+
+    expect(correction.messageIntent).toBe('CORRECTION');
+    expect(followUp.vehicle.year).toBe('2009');
+    expect(followUp.resolvedQuery).toContain('2009');
+    expect(followUp.resolvedQuery).not.toContain('2008');
+  });
+
+  it('does not share vehicle or pending intent between independent chat states', () => {
+    const chatA = service.rewrite('Onde fica a bateria do Audi A4?');
+    const chatB = service.rewrite('Qual óleo do Civic?');
+    const continuedA = service.rewrite('2008', [], chatA.state);
+    const continuedB = service.rewrite('2015, 2.0', [], chatB.state);
+
+    expect(continuedA.resolvedQuery).toContain('bateria do Audi A4 2008');
+    expect(continuedA.resolvedQuery).not.toContain('CIVIC');
+    expect(continuedB.resolvedQuery).toContain('óleo do Honda CIVIC 2015 2.0');
+    expect(continuedB.resolvedQuery).not.toContain('Audi');
   });
 });

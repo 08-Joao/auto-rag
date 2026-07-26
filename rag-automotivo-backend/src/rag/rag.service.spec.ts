@@ -1,8 +1,146 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/require-await, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 import { QueryRewriterService } from './query-rewriter.service';
+import { RelevanceValidatorService } from './relevance-validator.service';
 import { RagService } from './rag.service';
 import type { RagConversationState, RagSource } from './types';
+import { RunnableLambda } from '@langchain/core/runnables';
 
 describe('RagService conversation rewrite', () => {
+  it('remove referencias a figuras que nao foram anexadas', () => {
+    const service = new RagService(
+      new QueryRewriterService(),
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      new RelevanceValidatorService(),
+    );
+
+    const cleaned = (service as any).removeUnavailableVisualReferences(
+      [
+        'Para abrir, pressione o lado esquerdo -arrow-.',
+        'O manual menciona a abertura, conforme ilustração na página 254.',
+      ].join(' '),
+    );
+
+    expect(cleaned).toBe('Para abrir, pressione o lado esquerdo.');
+    expect(cleaned).not.toMatch(/figura|ilustra|arrow/i);
+  });
+
+  it('normaliza quebras de linha do OCR ao validar detalhes da resposta', () => {
+    const service = new RagService(
+      new QueryRewriterService(),
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      new RelevanceValidatorService(),
+    );
+    const source = {
+      score: 0.9,
+      chunk_id: 'ocr-engine-compartment',
+      document_name: 'manual.pdf',
+      page_start: 260,
+      page_end: 260,
+      section_title: 'Fig. 256',
+      text: 'Engine\ncompartment: Engine\noil filler cap',
+      image_paths: [],
+      metadata: {},
+    } as RagSource;
+
+    const unsupported = (service as any).findUnsupportedSpecificDetails(
+      'A tampa fica no compartimento do motor.',
+      [source],
+    );
+
+    expect(unsupported).toEqual([]);
+  });
+
+  it('rejeita capo quando a evidencia fala somente de fuel cap', () => {
+    const service = new RagService(
+      new QueryRewriterService(),
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      new RelevanceValidatorService(),
+    );
+    const source = {
+      score: 0.9,
+      chunk_id: 'fuel-flap',
+      document_name: 'manual.pdf',
+      page_start: 254,
+      page_end: 254,
+      text: 'Fuel tank flap with cap attached.',
+      image_paths: [],
+      metadata: {},
+    } as RagSource;
+
+    const unsupported = (service as any).findUnsupportedSpecificDetails(
+      'O flap está conectado ao capô.',
+      [source],
+    );
+
+    expect(unsupported).toContain('capo');
+  });
+
+  it('repara uma recusa do gerador quando a evidencia foi validada como direta', async () => {
+    const outputs = [
+      JSON.stringify({
+        answer: 'Não possuo conhecimento sobre este assunto.',
+        returnImages: false,
+        citations: [],
+        warnings: [],
+        missingInformation: [],
+      }),
+      JSON.stringify({
+        answer:
+          'A tampa de abastecimento do óleo do motor fica no compartimento do motor.',
+        returnImages: false,
+        citations: [],
+        warnings: [],
+        missingInformation: [],
+      }),
+    ];
+    const model = RunnableLambda.from(async () => outputs.shift() ?? '');
+    const service = new RagService(
+      new QueryRewriterService(),
+      { retrieve: jest.fn() } as never,
+      {
+        getModel: jest.fn(() => model),
+        cleanOutput: jest.fn((value: string) => value),
+      } as never,
+      {} as never,
+      {} as never,
+      new RelevanceValidatorService(),
+    );
+    const source = {
+      score: 0.9,
+      chunk_id: 'engine-oil-cap',
+      document_name: '2008-audi-a4.pdf',
+      page_start: 260,
+      page_end: 260,
+      section_title: 'Engine compartment',
+      text: 'Fig. 256 Engine compartment: Engine oil filler cap.',
+      image_paths: [],
+      metadata: {
+        vehicle_make: 'Audi',
+        vehicle_model: 'A4',
+        vehicle_year: 2008,
+      },
+    } as RagSource;
+
+    const result = await (service as any).generateStructuredAnswer(
+      'Onde fica a tampa do óleo do Audi A4 2008?',
+      [],
+      [source],
+      true,
+    );
+
+    expect(result.answer).toContain('compartimento do motor');
+    expect(outputs).toHaveLength(0);
+  });
+
   it('uses resolvedQuery instead of rawMessage when consulting retrieval', async () => {
     let ragQueryUsed = '';
     const retriever = {
@@ -18,11 +156,24 @@ describe('RagService conversation rewrite', () => {
     const visualImages = {
       stripImages: jest.fn((sources) => sources),
     };
+    const qwenImageReranker = {
+      rerankImages: jest.fn(),
+    };
     const service = new RagService(
       new QueryRewriterService(),
       retriever as never,
       ollama as never,
       visualImages as never,
+      qwenImageReranker as never,
+      {
+        evaluate: jest.fn((_query, sources) => ({
+          accepted: sources,
+          selected: sources,
+          evaluations: [],
+          answerability: 'DIRECT',
+          selectionThreshold: 0,
+        })),
+      } as never,
     );
     const state: RagConversationState = {
       lastUserQuestion: 'Onde fica a tampa do oleo do Audi A4?',
@@ -43,7 +194,7 @@ describe('RagService conversation rewrite', () => {
     expect(ragQueryUsed).not.toBe('Audi A4 2010');
   });
 
-  it('answers the pending oil cap location directly after year follow-up and suppresses bad images', async () => {
+  it('preserves the pending query and refuses a model answer that only refers to a diagram', async () => {
     const source: RagSource = {
       score: 0.95,
       chunk_id: 'chunk-a4-2010-engine',
@@ -61,7 +212,11 @@ describe('RagService conversation rewrite', () => {
         'rag_chunks_output/images/cover.jpg',
         'rag_chunks_output/images/empty.jpg',
       ],
-      metadata: { vehicle_make: 'Audi', vehicle_model: 'A4', vehicle_year: 2010 },
+      metadata: {
+        vehicle_make: 'Audi',
+        vehicle_model: 'A4',
+        vehicle_year: 2010,
+      },
       retrieval_scores: { final: 0.95, reranker: 0.95, metadata: 1 },
     };
     let ragQueryUsed = '';
@@ -102,11 +257,24 @@ describe('RagService conversation rewrite', () => {
       })),
       filterSourcesByRerankResult: jest.fn(),
     };
+    const qwenImageReranker = {
+      rerankImages: jest.fn(),
+    };
     const service = new RagService(
       new QueryRewriterService(),
       retriever as never,
       ollama as never,
       visualImages as never,
+      qwenImageReranker as never,
+      {
+        evaluate: jest.fn((_query, sources) => ({
+          accepted: sources,
+          selected: sources,
+          evaluations: [],
+          answerability: 'DIRECT',
+          selectionThreshold: 0,
+        })),
+      } as never,
     );
     jest.spyOn(service as any, 'generateStructuredAnswer').mockResolvedValue({
       answer:
@@ -115,7 +283,14 @@ describe('RagService conversation rewrite', () => {
       citations: [],
       warnings: [],
       missingInformation: [],
-    } as never);
+    });
+    jest.spyOn(service as any, 'repairStructuredAnswer').mockResolvedValue({
+      answer: 'Não possuo conhecimento sobre este assunto.',
+      returnImages: false,
+      citations: [],
+      warnings: [],
+      missingInformation: [],
+    });
     const state: RagConversationState = {
       lastUserQuestion: 'Onde fica a tampa de óleo do Audi A4?',
       pendingQuestion: 'Onde fica a tampa de óleo do Audi A4?',
@@ -133,17 +308,13 @@ describe('RagService conversation rewrite', () => {
 
     expect(ragQueryUsed).toContain('Onde fica a tampa de óleo do Audi A4 2010');
     expect(ragQueryUsed).not.toBe('2010');
-    expect(result.answer).toContain('compartimento do motor');
-    expect(result.answer).toContain('engine oil filler cap');
-    expect(result.answer.toLowerCase()).not.toMatch(
-      /^para encontrar.*consulte o diagrama/,
-    );
+    expect(result.answer).toBe('Não possuo conhecimento sobre este assunto.');
     expect(result.returnImages).toBe(false);
     expect(result.images).toEqual([]);
-    expect(result.confidence).toBeLessThan(0.85);
+    expect(result.sources).toEqual([]);
   });
 
-  it('replaces hallucinated oil reservoir wording with grounded oil filler cap wording', async () => {
+  it('repara detalhes alucinados quando existe localizacao documental direta', async () => {
     const source: RagSource = {
       score: 0.96,
       chunk_id: 'chunk-a4-2008-engine',
@@ -157,7 +328,11 @@ describe('RagService conversation rewrite', () => {
         'Main components for checking and refilling',
       ].join('\n'),
       image_paths: ['rag_chunks_output/images/2008-audi-a4/engine-layout.jpg'],
-      metadata: { vehicle_make: 'Audi', vehicle_model: 'A4', vehicle_year: 2008 },
+      metadata: {
+        vehicle_make: 'Audi',
+        vehicle_model: 'A4',
+        vehicle_year: 2008,
+      },
       retrieval_scores: { final: 0.96, reranker: 0.96, metadata: 1 },
     };
     const retriever = {
@@ -175,11 +350,24 @@ describe('RagService conversation rewrite', () => {
       rerankImages: jest.fn(),
       filterSourcesByRerankResult: jest.fn(),
     };
+    const qwenImageReranker = {
+      rerankImages: jest.fn(),
+    };
     const service = new RagService(
       new QueryRewriterService(),
       retriever as never,
       ollama as never,
       visualImages as never,
+      qwenImageReranker as never,
+      {
+        evaluate: jest.fn((_query, sources) => ({
+          accepted: sources,
+          selected: sources,
+          evaluations: [],
+          answerability: 'DIRECT',
+          selectionThreshold: 0,
+        })),
+      } as never,
     );
     jest.spyOn(service as any, 'generateStructuredAnswer').mockResolvedValue({
       answer:
@@ -188,15 +376,75 @@ describe('RagService conversation rewrite', () => {
       citations: [],
       warnings: [],
       missingInformation: [],
-    } as never);
+    });
+    jest.spyOn(service as any, 'repairStructuredAnswer').mockResolvedValue({
+      answer:
+        'A tampa de abastecimento do óleo do motor fica no compartimento do motor.',
+      returnImages: false,
+      citations: [],
+      warnings: [],
+      missingInformation: [],
+    });
 
-    const result = await service.answer('Onde fica a tampa do oleo do Audi A4 2008?');
+    const result = await service.answer(
+      'Onde fica a tampa do oleo do Audi A4 2008?',
+    );
 
-    expect(result.answer).toContain('tampa/bocal');
-    expect(result.answer).toContain('engine oil filler cap');
-    expect(result.answer.toLowerCase()).not.toContain('reservatório de óleo');
-    expect(result.answer.toLowerCase()).not.toContain('reservatorio de oleo');
+    expect(result.answer).toContain('compartimento do motor');
+    expect(result.sources).toHaveLength(1);
     expect(result.answer.toLowerCase()).not.toContain('gasket');
-    expect(result.confidence).toBeLessThan(0.9);
+    expect(result.answer.toLowerCase()).not.toContain('reservatório de óleo');
+  });
+
+  it('refuses exactly and exposes no sources when all chunks conflict with the requested component', async () => {
+    const conflicting = [
+      {
+        score: 0.95,
+        chunk_id: 'oil',
+        document_name: '2008-audi-a4.pdf',
+        page_start: 257,
+        page_end: 258,
+        text: 'Engine oil filler cap in the engine compartment.',
+        image_paths: [],
+        metadata: {
+          vehicle_make: 'Audi',
+          vehicle_model: 'A4',
+          vehicle_year: 2008,
+        },
+        retrieval_scores: { vector: 0.95, final: 0.95 },
+      },
+      {
+        score: 0.9,
+        chunk_id: 'brake',
+        document_name: '2008-audi-a4.pdf',
+        page_start: 260,
+        page_end: 260,
+        text: 'Brake fluid reservoir.',
+        image_paths: [],
+        metadata: {
+          vehicle_make: 'Audi',
+          vehicle_model: 'A4',
+          vehicle_year: 2008,
+        },
+        retrieval_scores: { vector: 0.9, final: 0.9 },
+      },
+    ] as RagSource[];
+    const service = new RagService(
+      new QueryRewriterService(),
+      { retrieve: jest.fn(async () => conflicting) } as never,
+      { getModel: jest.fn(), cleanOutput: jest.fn() } as never,
+      { stripImages: jest.fn((sources) => sources) } as never,
+      { rerankImages: jest.fn() } as never,
+      new RelevanceValidatorService(),
+    );
+
+    const result = await service.answer(
+      'Onde fica a tampa do tanque de combustível do Audi A4 2008?',
+    );
+
+    expect(result.answer).toBe('Não possuo conhecimento sobre este assunto.');
+    expect(result.sources).toEqual([]);
+    expect(result.citations).toEqual([]);
+    expect(result.status).toBe('insufficient_context');
   });
 });

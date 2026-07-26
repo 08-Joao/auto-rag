@@ -13,6 +13,7 @@ from typing import Any
 import torch
 from PIL import Image, UnidentifiedImageError
 from transformers import CLIPModel, CLIPProcessor
+from model_runtime import configure_determinism, log_runtime, memory_snapshot, resolve_device
 
 
 def parse_args() -> argparse.Namespace:
@@ -195,6 +196,7 @@ def build_prompt_sets(question: str) -> tuple[list[str], list[str]]:
 
 
 def main() -> None:
+    configure_determinism()
     args = parse_args()
     project_root = Path(args.project_root).resolve()
     candidates: list[dict[str, Any]] = json.loads(args.candidates_json)
@@ -212,10 +214,14 @@ def main() -> None:
         print(json.dumps([], ensure_ascii=False))
         return
 
-    requested_device = os.getenv("RAG_CLIP_DEVICE", "cpu").lower()
-    device = "cuda" if requested_device == "cuda" and torch.cuda.is_available() else "cpu"
+    device = resolve_device(
+        os.getenv("RAG_CLIP_DEVICE", "cpu"),
+        int(os.getenv("RAG_CLIP_MINIMUM_FREE_VRAM_MB", "2048")),
+    )
+    log_runtime("clip_model_load", phase="before", **memory_snapshot(device))
     model = CLIPModel.from_pretrained(args.model).to(device)
     processor = CLIPProcessor.from_pretrained(args.model)
+    log_runtime("clip_model_load", phase="after", **memory_snapshot(device))
     model.eval()
 
     positive_prompts, negative_prompts = build_prompt_sets(args.question)

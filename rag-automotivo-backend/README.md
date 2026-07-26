@@ -44,6 +44,7 @@ Antes de usar os chats, garanta que o índice foi gerado pelo notebook `../chunk
 
 ```bash
 $ ollama pull deepseek-r1:8b
+$ ollama pull qwen2.5vl:7b
 $ ollama list
 ```
 
@@ -71,6 +72,18 @@ RAG_RERANKER_TOP_K=40
 RAG_CLIP_THRESHOLD=0.24
 RAG_CLIP_MAX_IMAGES=5
 RAG_CLIP_DEVICE=cpu
+RAG_EMBEDDING_DEVICE=cpu
+RAG_RERANKER_DEVICE=cpu
+RAG_VISUAL_RETRIEVAL_ENABLED=true
+RAG_QWEN_RERANKER_ENABLED=false
+RAG_MAX_CONCURRENT_RETRIEVALS=1
+RAG_MAX_CONCURRENT_GENERATIONS=1
+RAG_GENERATION_TEMPERATURE=0
+RAG_GENERATION_TOP_P=1
+RAG_QWEN_RERANKER_MODEL=qwen2.5vl:7b
+RAG_QWEN_MAX_IMAGES=5
+# Defina como true somente para executar o Qwen sem analisar os pixels:
+RAG_QWEN_TEXT_ONLY=false
 ```
 
 ### Pipeline de qualidade implementado
@@ -80,6 +93,12 @@ O recuperador combina busca vetorial FAISS, BM25 local, suplementos lexicais de 
 A resposta final preserva o contrato antigo (`answer`, `sources`, `returnImages`) e adiciona metadados profissionais: `confidence`, `status`, `reasoning_type`, `vehicle_detected`, `citations`, `images`, `warnings`, `missing_information` e `retrieval_scores` por fonte.
 
 O CLIP continua local e so e chamado quando a pergunta tem intencao visual e existem imagens candidatas. As imagens exibidas passam a vir preferencialmente dos resultados aprovados pelo CLIP.
+
+Para o reranking visual com Qwen, use uma variante VL. `qwen2.5:7b` e um
+modelo apenas textual e nao aceita o campo `images` da API do Ollama. O servico
+consulta as capacidades do modelo antes do reranking e, quando `vision` nao
+estiver disponivel, usa somente legenda, OCR e contexto textual sem disparar
+uma requisicao visual invalida.
 
 ## Compile and run the project
 

@@ -1,15 +1,20 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
 
-import type { RagRetrievalResult, RagSource } from './types';
+import { AsyncSemaphore } from './async-semaphore';
+import type {
+  RagRetrievalFilters,
+  RagRetrievalResult,
+  RagSource,
+} from './types';
 
 const execFileAsync = promisify(execFile);
 
 @Injectable()
-export class RagRetrieverService {
+export class RagRetrieverService implements OnModuleInit {
   private readonly logger = new Logger(RagRetrieverService.name);
 
   private readonly pythonBin =
@@ -35,6 +40,28 @@ export class RagRetrieverService {
   private readonly bm25TopK = Number(process.env.RAG_BM25_TOP_K ?? 40);
   private readonly rerankerModel = process.env.RAG_RERANKER_MODEL ?? '';
   private readonly rerankerTopK = Number(process.env.RAG_RERANKER_TOP_K ?? 40);
+  private readonly embeddingDevice = process.env.RAG_EMBEDDING_DEVICE ?? 'cpu';
+  private readonly rerankerDevice = process.env.RAG_RERANKER_DEVICE ?? 'cpu';
+  private readonly semaphore = new AsyncSemaphore(
+    Number(process.env.RAG_MAX_CONCURRENT_RETRIEVALS ?? 1),
+  );
+
+  onModuleInit(): void {
+    const indexPath = join(this.outputDir, 'manual_chunks.faiss');
+    const metadataPath = join(this.outputDir, 'chunks_metadata.json');
+    const ready = existsSync(indexPath) && existsSync(metadataPath);
+    this.logger.log(
+      JSON.stringify({
+        event: 'rag_retrieval_health',
+        ready,
+        indexPath,
+        metadataPath,
+        embeddingModel: this.embeddingModel,
+        embeddingDevice: this.embeddingDevice,
+        rerankerDevice: this.rerankerDevice,
+      }),
+    );
+  }
 
   private resolveDefaultPython(): string {
     const localVenvPython = resolve(
@@ -47,7 +74,18 @@ export class RagRetrieverService {
     return existsSync(localVenvPython) ? localVenvPython : 'python3';
   }
 
-  async retrieve(query: string): Promise<RagSource[]> {
+  async retrieve(
+    query: string,
+    filters: RagRetrievalFilters = {},
+  ): Promise<RagSource[]> {
+    return this.semaphore.run(() => this.executeRetrieval(query, filters));
+  }
+
+  private async executeRetrieval(
+    query: string,
+    filters: RagRetrievalFilters,
+  ): Promise<RagSource[]> {
+    const startedAt = Date.now();
     const args = [
       this.retrieverScript,
       '--query',
@@ -64,7 +102,19 @@ export class RagRetrieverService {
       String(this.bm25TopK),
       '--reranker-top-k',
       String(this.rerankerTopK),
+      '--embedding-device',
+      this.embeddingDevice,
+      '--reranker-device',
+      this.rerankerDevice,
+      '--minimum-free-vram-mb',
+      String(process.env.RAG_MINIMUM_FREE_VRAM_MB ?? 2048),
     ];
+
+    for (const [name, value] of Object.entries(filters)) {
+      if (value) {
+        args.push(`--vehicle-${name}`, String(value));
+      }
+    }
 
     if (this.rerankerModel.trim()) {
       args.push('--reranker-model', this.rerankerModel.trim());
@@ -81,12 +131,52 @@ export class RagRetrieverService {
       }
 
       const parsed = JSON.parse(stdout) as RagRetrievalResult;
+      this.logger.log(
+        JSON.stringify({
+          event: 'rag_retrieval_result',
+          query,
+          status: parsed.status ?? 'SUCCESS_WITH_EVIDENCE',
+          warnings: parsed.warnings ?? [],
+          diagnostics: parsed.diagnostics ?? {},
+          resultCount: parsed.results?.length ?? 0,
+          durationMs: Date.now() - startedAt,
+        }),
+      );
       return this.rerankAndLimit(parsed.results ?? [], query);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Falha ao recuperar chunks: ${message}`);
-      throw error;
+      const code = this.classifyFailure(message);
+      this.logger.error(
+        JSON.stringify({
+          event: 'rag_retrieval_failure',
+          query,
+          code,
+          retryable: !['INDEX_UNAVAILABLE', 'EMBEDDING_FAILURE'].includes(code),
+          durationMs: Date.now() - startedAt,
+          detail: message.slice(0, 2000),
+        }),
+      );
+      throw new RagRetrievalError(code, message);
     }
+  }
+
+  private classifyFailure(message: string): RetrievalFailureCode {
+    const normalized = message.toLowerCase();
+    if (normalized.includes('out of memory')) return 'RESOURCE_EXHAUSTED';
+    if (normalized.includes('timed out') || normalized.includes('timeout'))
+      return 'TIMEOUT';
+    if (
+      normalized.includes('faiss não encontrado') ||
+      normalized.includes('chunks não encontrados') ||
+      normalized.includes('index_metadata_count_mismatch')
+    )
+      return 'INDEX_UNAVAILABLE';
+    if (
+      normalized.includes('sentence') ||
+      normalized.includes('embedding_dimension_mismatch')
+    )
+      return 'EMBEDDING_FAILURE';
+    return 'INTERNAL_ERROR';
   }
 
   private rerankAndLimit(results: RagSource[], query: string): RagSource[] {
@@ -96,7 +186,10 @@ export class RagRetrieverService {
       .map((source, index) => ({
         source: {
           ...source,
-          score: Math.max(0, Math.min(1, source.score + this.relevanceBonus(source, query))),
+          score: Math.max(
+            0,
+            Math.min(1, source.score + this.relevanceBonus(source, query)),
+          ),
           retrieval_scores: {
             ...source.retrieval_scores,
             final: Math.max(
@@ -295,5 +388,22 @@ export class RagRetrieverService {
     }
 
     return bonus;
+  }
+}
+
+export type RetrievalFailureCode =
+  | 'INDEX_UNAVAILABLE'
+  | 'EMBEDDING_FAILURE'
+  | 'TIMEOUT'
+  | 'RESOURCE_EXHAUSTED'
+  | 'INTERNAL_ERROR';
+
+export class RagRetrievalError extends Error {
+  constructor(
+    readonly code: RetrievalFailureCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'RagRetrievalError';
   }
 }

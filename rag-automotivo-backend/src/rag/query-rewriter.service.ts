@@ -4,6 +4,7 @@ import type {
   RagChatHistoryMessage,
   RagConversationState,
   RagConversationVehicle,
+  RagMessageIntent,
   RagQueryRewriteResult,
 } from './types';
 
@@ -78,8 +79,8 @@ export class QueryRewriterService {
     const parsed = this.parseMessage(normalizedRaw);
     const historyVehicle = this.extractVehicleFromHistory(history);
     const baseVehicle = this.mergeVehicle(
-      state.vehicle,
       historyVehicle,
+      state.vehicle,
       parsed.vehicle,
     );
 
@@ -87,9 +88,9 @@ export class QueryRewriterService {
       Boolean(state.pendingQuestion) && state.lastAnswerNeededClarification;
     const currentHasVehicle = Boolean(
       parsed.vehicle.brand ||
-        parsed.vehicle.model ||
-        parsed.vehicle.year ||
-        parsed.vehicle.engine,
+      parsed.vehicle.model ||
+      parsed.vehicle.year ||
+      parsed.vehicle.engine,
     );
     const isFollowUp =
       (hasPendingQuestion && (parsed.isVehicleOnly || !parsed.isQuestion)) ||
@@ -104,14 +105,28 @@ export class QueryRewriterService {
     const resolvedQuery = this.composeResolvedQuery(
       sourceQuestion,
       baseVehicle,
-      isFollowUp,
     );
     const intent =
       parsed.intent !== 'manual_lookup'
         ? parsed.intent
         : state.intent || this.detectIntent(resolvedQuery);
-    const missingSlots = this.getMissingSlots(resolvedQuery, baseVehicle, intent);
+    const missingSlots = this.getMissingSlots(
+      resolvedQuery,
+      baseVehicle,
+      intent,
+    );
     const pendingQuestion = missingSlots.length > 0 ? resolvedQuery : '';
+    const messageIntent = this.classifyMessageIntent(
+      normalizedRaw,
+      parsed,
+      state,
+      isFollowUp,
+    );
+    const openIntent = this.buildOpenIntent(
+      normalizedRaw,
+      resolvedQuery,
+      baseVehicle,
+    );
     const nextState: RagConversationState = {
       lastUserQuestion: normalizedRaw,
       pendingQuestion,
@@ -120,6 +135,7 @@ export class QueryRewriterService {
       vehicle: baseVehicle,
       missingSlots,
       lastAnswerNeededClarification: missingSlots.length > 0,
+      messageIntent,
     };
 
     return {
@@ -131,6 +147,8 @@ export class QueryRewriterService {
       missingSlots,
       pendingQuestion,
       lastAnswerNeededClarification: nextState.lastAnswerNeededClarification,
+      messageIntent,
+      openIntent,
       state: nextState,
     };
   }
@@ -171,7 +189,6 @@ export class QueryRewriterService {
   private composeResolvedQuery(
     question: string,
     vehicle: RagConversationVehicle,
-    isFollowUp: boolean,
   ): string {
     let resolved = this.normalizeWhitespace(question);
     if (!resolved) {
@@ -181,7 +198,7 @@ export class QueryRewriterService {
     resolved = this.expandPronouns(resolved, vehicle);
 
     const vehicleText = this.vehicleToText(vehicle);
-    if (isFollowUp && vehicleText) {
+    if (vehicleText) {
       const replaced = this.replaceVehicleInQuestion(resolved, vehicleText);
       if (replaced !== resolved) {
         resolved = replaced;
@@ -193,7 +210,10 @@ export class QueryRewriterService {
     return this.normalizeWhitespace(resolved);
   }
 
-  private replaceVehicleInQuestion(question: string, vehicleText: string): string {
+  private replaceVehicleInQuestion(
+    question: string,
+    vehicleText: string,
+  ): string {
     const brandPattern = this.brands.join('|');
     const modelPattern = Object.keys(this.modelBrandMap).join('|');
     const pattern = new RegExp(
@@ -203,6 +223,20 @@ export class QueryRewriterService {
 
     if (pattern.test(question)) {
       return question.replace(pattern, vehicleText);
+    }
+
+    const standaloneModel = Object.keys(this.modelBrandMap).find((model) =>
+      new RegExp(`\\b${model}\\b`, 'i').test(question),
+    );
+    const vehicleAddsMissingDetails =
+      (/\b(?:19|20)\d{2}\b/.test(vehicleText) &&
+        !/\b(?:19|20)\d{2}\b/.test(question)) ||
+      (/\b\d\.\d\b/.test(vehicleText) && !/\b\d\.\d\b/.test(question));
+    if (standaloneModel && vehicleAddsMissingDetails) {
+      return question.replace(
+        new RegExp(`\\b${standaloneModel}\\b`, 'i'),
+        vehicleText,
+      );
     }
 
     return question;
@@ -218,7 +252,10 @@ export class QueryRewriterService {
         state.intent === 'oil_specification' &&
         /\btampa\s+(dele|dela)\b/i.test(message)
       ) {
-        return message.replace(/\btampa\s+(dele|dela)\b/i, 'tampa do oleo dele');
+        return message.replace(
+          /\btampa\s+(dele|dela)\b/i,
+          'tampa do oleo dele',
+        );
       }
 
       return message;
@@ -254,7 +291,6 @@ export class QueryRewriterService {
   ): RagConversationVehicle {
     return history
       .filter((message) => message.sender === 'USER')
-      .slice(-6)
       .map((message) => this.extractVehicle(message.content))
       .reduce(
         (acc, vehicle) => this.mergeVehicle(acc, vehicle),
@@ -262,7 +298,9 @@ export class QueryRewriterService {
       );
   }
 
-  private lastUserQuestionFromHistory(history: RagChatHistoryMessage[]): string {
+  private lastUserQuestionFromHistory(
+    history: RagChatHistoryMessage[],
+  ): string {
     return (
       history
         .filter((message) => message.sender === 'USER')
@@ -274,15 +312,17 @@ export class QueryRewriterService {
 
   private extractVehicle(text: string): RagConversationVehicle {
     const normalized = text.toLowerCase();
-    const words = normalized.split(/\s+/).filter(Boolean);
     const year = normalized.match(/\b(19|20)\d{2}\b/)?.[0];
-    const engine = normalized.match(/\b\d\.\d\s*(?:tfsi|tsi|tdi|flex|turbo)?\b/i)?.[0];
+    const engine = normalized.match(
+      /\b\d\.\d\s*(?:tfsi|tsi|tdi|flex|turbo)?\b/i,
+    )?.[0];
     const brandMatch = this.brands.find((brand) =>
       new RegExp(`\\b${brand}\\b`, 'i').test(normalized),
     );
     const model = this.extractModel(normalized, brandMatch);
     const inferredBrand =
-      brandMatch ?? (model ? this.modelBrandMap[model.toLowerCase()] : undefined);
+      brandMatch ??
+      (model ? this.modelBrandMap[model.toLowerCase()] : undefined);
 
     return {
       brand: this.titleBrand(inferredBrand),
@@ -295,7 +335,10 @@ export class QueryRewriterService {
   private extractModel(text: string, brand?: string): string | undefined {
     if (brand) {
       const afterBrand = text.match(
-        new RegExp(`\\b${brand}\\b\\s+([a-z0-9-]{1,16}(?:\\s+[a-z0-9-]{1,16})?)`, 'i'),
+        new RegExp(
+          `\\b${brand}\\b\\s+([a-z0-9-]{1,16}(?:\\s+[a-z0-9-]{1,16})?)`,
+          'i',
+        ),
       )?.[1];
       if (afterBrand) {
         const candidate = afterBrand
@@ -378,16 +421,100 @@ export class QueryRewriterService {
     if (this.hasLocationTerm(normalized)) {
       return 'locate_component';
     }
-    if (/(qual|tipo|recomendad|viscosidade|norma).*(óleo|oleo|oil)|(?:óleo|oleo|oil).*(qual|tipo|recomendad|viscosidade|norma)/i.test(normalized)) {
+    if (
+      /(qual|tipo|recomendad|viscosidade|norma).*(óleo|oleo|oil)|(?:óleo|oleo|oil).*(qual|tipo|recomendad|viscosidade|norma)/i.test(
+        normalized,
+      )
+    ) {
       return 'oil_specification';
     }
     if (/(pneu|aro|roda|calibragem|press[aã]o)/i.test(normalized)) {
       return 'tire_specification';
     }
-    if (/(como|procedimento|passo a passo|trocar|verificar|resetar)/i.test(normalized)) {
+    if (
+      /(como|procedimento|passo a passo|trocar|verificar|resetar)/i.test(
+        normalized,
+      )
+    ) {
       return 'procedure';
     }
     return 'manual_lookup';
+  }
+
+  private classifyMessageIntent(
+    message: string,
+    parsed: ParsedMessage,
+    previous: RagConversationState,
+    isFollowUp: boolean,
+  ): RagMessageIntent {
+    if (
+      /\b(?:na verdade|corrigindo|corre[cç][aã]o|quis dizer)\b/i.test(message)
+    ) {
+      return 'CORRECTION';
+    }
+    if (previous.lastAnswerNeededClarification && isFollowUp) {
+      return 'CLARIFICATION_RESPONSE';
+    }
+    if (
+      parsed.isQuestion &&
+      previous.intent &&
+      parsed.intent !== 'manual_lookup' &&
+      parsed.intent !== previous.intent
+    ) {
+      return 'TOPIC_CHANGE';
+    }
+    if (isFollowUp) {
+      return 'FOLLOW_UP';
+    }
+    return 'NEW_QUESTION';
+  }
+
+  private buildOpenIntent(
+    originalMeaning: string,
+    standaloneQuery: string,
+    vehicle: RagConversationVehicle,
+  ): RagQueryRewriteResult['openIntent'] {
+    const normalized = standaloneQuery.replace(/[?!.,;:]+/g, ' ').trim();
+    const actionMatch = normalized.match(
+      /\b(onde fica|onde está|como|qual|quanto|quando|localizar|abrir|fechar|ativar|desativar|trocar|verificar|ajustar|configurar|redefinir|rebocar|usar)\b/i,
+    );
+    const constraints = [
+      vehicle.brand,
+      vehicle.model,
+      vehicle.year,
+      vehicle.engine,
+      vehicle.version,
+    ].filter((value): value is string => Boolean(value));
+    let subject = normalized;
+    if (actionMatch) {
+      subject = subject.replace(actionMatch[0], '').trim();
+    }
+    for (const constraint of constraints) {
+      subject = subject.replace(new RegExp(`\\b${constraint}\\b`, 'gi'), ' ');
+    }
+    subject = subject
+      .replace(/\b(?:do|da|de|no|na|o|a|um|uma|ve[ií]culo|carro)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return {
+      action: actionMatch?.[0].toLowerCase(),
+      subject: subject || undefined,
+      attributes: this.extractProtectedTerms(standaloneQuery),
+      constraints,
+      originalMeaning,
+      standaloneQuery,
+    };
+  }
+
+  private extractProtectedTerms(text: string): string[] {
+    return [
+      ...(text.match(/"[^"]+"/g) ?? []),
+      ...(text.match(
+        /\b(?:\d+(?:[.,]\d+)?\s*(?:v|bar|psi|kpa|nm|litros?|l)|\d{3}\/\d{2}\s*r\s*\d{2}|[a-z]\d{1,3}|[05]w-?\d{2})\b/gi,
+      ) ?? []),
+      ...(text.match(/\b(?:n[aã]o|sem|nunca|apenas)\b/gi) ?? []),
+    ];
   }
 
   private hasLocationTerm(text: string): boolean {
@@ -447,7 +574,13 @@ export class QueryRewriterService {
       .replace(/\b(?:19|20)\d{2}\b/g, '')
       .replace(/\b\d\.\d\s*(?:tfsi|tsi|tdi|flex|turbo)?\b/gi, '')
       .replace(new RegExp(`\\b(${this.brands.join('|')})\\b`, 'gi'), '')
-      .replace(new RegExp(`\\b(${Object.keys(this.modelBrandMap).join('|')})\\b`, 'gi'), '')
+      .replace(
+        new RegExp(
+          `\\b(${Object.keys(this.modelBrandMap).join('|')})\\b`,
+          'gi',
+        ),
+        '',
+      )
       .replace(/\b(ano|motor|vers[aã]o|modelo)\b/gi, '')
       .replace(/[^\wÀ-ÿ]+/g, ' ')
       .trim();
@@ -466,7 +599,9 @@ export class QueryRewriterService {
   private hasAnyKnownBrandOrModel(text: string): boolean {
     const normalized = text.toLowerCase();
     return (
-      this.brands.some((brand) => new RegExp(`\\b${brand}\\b`).test(normalized)) ||
+      this.brands.some((brand) =>
+        new RegExp(`\\b${brand}\\b`).test(normalized),
+      ) ||
       Object.keys(this.modelBrandMap).some((model) =>
         new RegExp(`\\b${model}\\b`).test(normalized),
       )
@@ -482,7 +617,14 @@ export class QueryRewriterService {
       return false;
     }
     if (vehicle.brand && !normalized.includes(vehicle.brand.toLowerCase())) {
-      return false;
+      const model = vehicle.model?.toLowerCase();
+      const modelImpliesBrand =
+        model &&
+        normalized.includes(model) &&
+        this.modelBrandMap[model] === vehicle.brand.toLowerCase();
+      if (!modelImpliesBrand) {
+        return false;
+      }
     }
     if (vehicle.model && !normalized.includes(vehicle.model.toLowerCase())) {
       return false;
@@ -491,7 +633,13 @@ export class QueryRewriterService {
   }
 
   private vehicleToText(vehicle: RagConversationVehicle): string {
-    return [vehicle.brand, vehicle.model, vehicle.year, vehicle.engine, vehicle.version]
+    return [
+      vehicle.brand,
+      vehicle.model,
+      vehicle.year,
+      vehicle.engine,
+      vehicle.version,
+    ]
       .filter(Boolean)
       .join(' ');
   }
