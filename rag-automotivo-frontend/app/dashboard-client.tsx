@@ -36,9 +36,11 @@ import {
   getChat,
   getRagImageUrl,
   streamChatMessage,
+  updateChatReranker,
   type ChatDetail,
   type ChatMessage,
   type RagSource,
+  type VisualReranker,
 } from "@/services/chats";
 import { getMe, logout, type AuthUser } from "@/services/auth";
 
@@ -164,6 +166,10 @@ function SourceItem({
     ? (source.clip_results ?? []).map((result) => result.imagePath)
     : [];
   const documentName = formatSourceDocumentName(source);
+  const pageLabel =
+    source.page_start === source.page_end
+      ? `Página ${source.page_start}`
+      : `Páginas ${source.page_start} a ${source.page_end}`;
 
   return (
     <div className="space-y-2 rounded-md border border-border bg-background p-3">
@@ -175,7 +181,7 @@ function SourceItem({
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <p className="text-xs font-semibold">Fonte {index + 1}</p>
             <p className="text-xs text-muted-foreground">
-              Páginas {source.page_start}-{source.page_end}
+              {pageLabel}
               {source.metadata?.brand ? ` · ${source.metadata.brand}` : ""}
             </p>
           </div>
@@ -191,7 +197,6 @@ function SourceItem({
             </p>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span>Score {source.score.toFixed(3)}</span>
             {images.length > 0 && (
               <span className="inline-flex items-center gap-1">
                 <ImageIcon className="size-3" />
@@ -278,7 +283,6 @@ function MessageSources({
   const sources = getSources(message);
   const imagePaths = getImagePaths(message);
   const visualIntent = shouldShowImageGallery(message);
-  const confidence = message.metadata?.confidence;
   const status = message.metadata?.status;
 
   if (isStreaming || sources.length === 0) {
@@ -289,11 +293,6 @@ function MessageSources({
     <div className="mt-4 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <SourcesDropdown sources={sources} visualIntent={visualIntent} />
-        {typeof confidence === "number" && (
-          <span className="rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
-            Confiança {Math.round(confidence * 100)}%
-          </span>
-        )}
         {status && status !== "answered" && (
           <span className="rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
             {status}
@@ -301,25 +300,27 @@ function MessageSources({
         )}
       </div>
 
-      {visualIntent && imagePaths.length > 0 && shouldShowImageGallery(message) && (
-        <div className="grid gap-3 sm:grid-cols-2">
-          {imagePaths.slice(0, 4).map((imagePath) => (
-            <a
-              className="group overflow-hidden rounded-lg border border-border bg-card"
-              href={getRagImageUrl(imagePath)}
-              key={imagePath}
-              rel="noreferrer"
-              target="_blank"
-            >
-              <img
-                alt="Imagem recuperada do manual"
-                className="h-44 w-full object-contain p-2 transition group-hover:bg-muted"
-                src={getRagImageUrl(imagePath)}
-              />
-            </a>
-          ))}
-        </div>
-      )}
+      {visualIntent &&
+        imagePaths.length > 0 &&
+        shouldShowImageGallery(message) && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {imagePaths.slice(0, 4).map((imagePath) => (
+              <a
+                className="group overflow-hidden rounded-lg border border-border bg-card"
+                href={getRagImageUrl(imagePath)}
+                key={imagePath}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <img
+                  alt="Imagem recuperada do manual"
+                  className="h-44 w-full object-contain p-2 transition group-hover:bg-muted"
+                  src={getRagImageUrl(imagePath)}
+                />
+              </a>
+            ))}
+          </div>
+        )}
     </div>
   );
 }
@@ -380,9 +381,11 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
   const [isSending, setIsSending] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isUpdatingReranker, setIsUpdatingReranker] = useState(false);
   const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
   const [shareLabel, setShareLabel] = useState("Compartilhar");
   const abortControllerRef = useRef<AbortController | null>(null);
+  const streamingChatIdRef = useRef<string | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
 
   const initials = getInitials(user?.name);
@@ -419,7 +422,7 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
 
         if (chatIdToOpen) {
           const detail = await getChat(chatIdToOpen);
-          if (isMounted) {
+          if (isMounted && streamingChatIdRef.current !== detail.id) {
             setActiveChat(detail);
             router.replace(`/c/${detail.id}`);
             focusPromptInput();
@@ -487,14 +490,17 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
     const userMessage = createOptimisticMessage(content, "USER");
     const assistantMessage = createOptimisticMessage("", "SYSTEM");
     const controller = new AbortController();
-
-    abortControllerRef.current = controller;
-    setIsSending(true);
-    setPrompt("");
-    setActiveChat({
+    const optimisticChat = {
       ...chat,
       message: [...chat.message, userMessage, assistantMessage],
-    });
+    };
+
+    abortControllerRef.current = controller;
+    streamingChatIdRef.current = chat.id;
+    setIsSending(true);
+    setPrompt("");
+    setActiveChat(optimisticChat);
+    upsertChat(optimisticChat);
 
     try {
       await streamChatMessage(chat.id, content, {
@@ -590,7 +596,6 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
           }
         },
       });
-
     } catch (error) {
       if (!controller.signal.aborted) {
         const message =
@@ -613,6 +618,9 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
     } finally {
       if (abortControllerRef.current === controller) {
         abortControllerRef.current = null;
+      }
+      if (streamingChatIdRef.current === chat.id) {
+        streamingChatIdRef.current = null;
       }
       setIsSending(false);
       focusPromptInput();
@@ -677,6 +685,38 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
     window.setTimeout(() => setShareLabel("Compartilhar"), 1600);
   }
 
+  async function handleRerankerChange(visualReranker: VisualReranker) {
+    if (!activeChat || isSending) {
+      return;
+    }
+
+    const previousChat = activeChat;
+    const optimisticChat = { ...activeChat, visualReranker };
+
+    setIsUpdatingReranker(true);
+    setActiveChat(optimisticChat);
+    upsertChat(optimisticChat);
+
+    try {
+      const updatedChat = await updateChatReranker(
+        activeChat.id,
+        visualReranker,
+      );
+      setActiveChat(updatedChat);
+      upsertChat(updatedChat);
+    } catch (error) {
+      setActiveChat(previousChat);
+      upsertChat(previousChat);
+      window.alert(
+        error instanceof Error
+          ? error.message
+          : "Nao foi possivel atualizar o reranker.",
+      );
+    } finally {
+      setIsUpdatingReranker(false);
+    }
+  }
+
   async function handleLogout() {
     setIsLoggingOut(true);
     try {
@@ -708,7 +748,11 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
       </div>
 
       <div className="p-4">
-        <Button className="w-full" onClick={handleCreateChat} variant="secondary">
+        <Button
+          className="w-full"
+          onClick={handleCreateChat}
+          variant="secondary"
+        >
           <Plus />
           Novo chat
         </Button>
@@ -717,12 +761,10 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
       <ScrollArea className="min-h-0 flex-1 px-3">
         <div className="space-y-1 pb-4">
           {chats.map((chat) => {
-            const lastMessage = chat.message[0]?.content ?? "Sem mensagens ainda";
+            const lastMessage =
+              chat.message[0]?.content ?? "Sem mensagens ainda";
             return (
-              <div
-                className="group relative"
-                key={chat.id}
-              >
+              <div className="group relative" key={chat.id}>
                 <Button
                   className="h-auto w-full justify-start px-3 py-3 pr-12 text-left"
                   data-active={activeChat?.id === chat.id}
@@ -823,20 +865,38 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
               </p>
             </div>
           </div>
-          <div className="hidden items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground sm:flex">
-            <UserCircle className="size-4" />
-            {user?.name ?? "Usuario"}
+          <div className="flex shrink-0 items-center gap-2">
+            {activeChat && (
+              <label className="hidden items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground sm:flex">
+                <span>Reranker</span>
+                <select
+                  className="bg-transparent text-sm font-medium text-foreground outline-none"
+                  disabled={isSending || isUpdatingReranker}
+                  onChange={(event) =>
+                    handleRerankerChange(event.target.value as VisualReranker)
+                  }
+                  value={activeChat.visualReranker ?? "clip"}
+                >
+                  <option value="clip">CLIP</option>
+                  <option value="qwen">Qwen 2.5</option>
+                </select>
+              </label>
+            )}
+            <div className="hidden items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground md:flex">
+              <UserCircle className="size-4" />
+              {user?.name ?? "Usuario"}
+            </div>
+            {activeChat && (
+              <Button
+                className="hidden sm:inline-flex"
+                onClick={handleShareChat}
+                variant="outline"
+              >
+                <Share2 className="size-4" />
+                {shareLabel}
+              </Button>
+            )}
           </div>
-          {activeChat && (
-            <Button
-              className="hidden sm:inline-flex"
-              onClick={handleShareChat}
-              variant="outline"
-            >
-              <Share2 className="size-4" />
-              {shareLabel}
-            </Button>
-          )}
         </header>
 
         <ScrollArea className="flex-1">
@@ -851,8 +911,9 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
                     Qual manual vamos consultar?
                   </h2>
                   <p className="mt-4 text-muted-foreground">
-                    Informe marca, modelo, ano e o procedimento ou sintoma. Se faltar
-                    contexto, o assistente vai perguntar antes de responder.
+                    Informe marca, modelo, ano e o procedimento ou sintoma. Se
+                    faltar contexto, o assistente vai perguntar antes de
+                    responder.
                   </p>
                   <div className="mt-8 grid gap-3 text-left sm:grid-cols-2">
                     {suggestions.map((suggestion) => (

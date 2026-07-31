@@ -35,6 +35,7 @@ function chatDetailToSummary(chat: ChatDetail): ChatSummary {
   return {
     id: chat.id,
     title: chat.title,
+    visualReranker: chat.visualReranker,
     createdAt: chat.createdAt,
     updatedAt: chat.updatedAt,
     message: lastMessage ? [lastMessage] : [],

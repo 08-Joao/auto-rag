@@ -84,6 +84,87 @@ describe('RagService conversation rewrite', () => {
     expect(unsupported).toContain('capo');
   });
 
+  it('simplifica termos inequivocos sem expor confianca interna', () => {
+    const service = new RagService(
+      new QueryRewriterService(),
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      new RelevanceValidatorService(),
+    );
+
+    const simplified = (service as any).normalizePublicLanguage(
+      [
+        'The fuel tank flap fica próximo ao luggage compartment.',
+        'Confiança: 57%.',
+      ].join('\n'),
+    );
+
+    expect(simplified).toContain('portinhola do tanque de combustível');
+    expect(simplified).toContain('porta-malas');
+    expect(simplified).not.toMatch(/fuel tank flap|luggage compartment/i);
+    expect(simplified).not.toMatch(/confian[cç]a/i);
+  });
+
+  it('apresenta fonte publica amigavel com pagina singular', () => {
+    const service = new RagService(
+      new QueryRewriterService(),
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      new RelevanceValidatorService(),
+    );
+    const source = {
+      score: 0.9,
+      chunk_id: 'fuel-flap',
+      document_name: '2008-audi-a4-audi-a4_2008_bbb9f770c8cb74dba7ce.pdf',
+      page_start: 254,
+      page_end: 254,
+      text: 'Fuel tank flap.',
+      image_paths: [],
+      metadata: {
+        vehicle_make: 'Audi',
+        vehicle_model: 'A4',
+        vehicle_year: 2008,
+      },
+    } as RagSource;
+
+    const answer = (service as any).ensureAnswerHasSourceFooter(
+      'A portinhola fica na lateral traseira direita.\n\nConfiança: 57%.',
+      [source],
+    );
+
+    expect(answer).toContain('Fonte: Manual do Audi A4 2008, página 254.');
+    expect(answer).not.toContain('bbb9f770c8cb74dba7ce');
+    expect(answer).not.toMatch(/confian[cç]a/i);
+    expect(answer).not.toContain('254-254');
+  });
+
+  it('identifica linguagem inadequada para publico leigo', () => {
+    const service = new RagService(
+      new QueryRewriterService(),
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      new RelevanceValidatorService(),
+    );
+
+    const issues = (service as any).findPublicClarityIssues(
+      'O fuel tank flap fica atrás da coluna de arrimo. Confiança: 57%.',
+    );
+
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        'termo em ingles sem explicacao',
+        'traducao literal pouco natural',
+        'percentual interno de confianca',
+      ]),
+    );
+  });
+
   it('repara uma recusa do gerador quando a evidencia foi validada como direta', async () => {
     const outputs = [
       JSON.stringify({

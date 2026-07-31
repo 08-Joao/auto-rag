@@ -1,5 +1,7 @@
 import { API_URL, apiFetch, ApiError } from "@/lib/api";
 
+export type VisualReranker = "clip" | "qwen";
+
 export type RagSource = {
   score: number;
   chunk_id: string;
@@ -23,6 +25,7 @@ export type RagSource = {
   };
   retrieval_scores?: {
     vector?: number;
+    lead_vector?: number;
     bm25?: number;
     lexical?: number;
     domain?: number;
@@ -52,6 +55,7 @@ export type MessageMetadata = {
   reasoning_type?: string;
   resolved_query?: string;
   is_follow_up?: boolean;
+  visual_reranker?: VisualReranker;
   conversation_state?: {
     lastUserQuestion: string;
     pendingQuestion: string;
@@ -107,6 +111,7 @@ export type ChatMessage = {
 export type ChatSummary = {
   id: string;
   title: string;
+  visualReranker: VisualReranker;
   createdAt: string;
   updatedAt: string;
   message: ChatMessage[];
@@ -119,6 +124,7 @@ export type ChatDetail = {
   id: string;
   userId: string;
   title: string;
+  visualReranker: VisualReranker;
   createdAt: string;
   updatedAt: string;
   message: ChatMessage[];
@@ -141,6 +147,16 @@ export function getChat(chatId: string) {
 export function deleteChat(chatId: string) {
   return apiFetch<{ id: string }>(`/chats/${chatId}`, {
     method: "DELETE",
+  });
+}
+
+export function updateChatReranker(
+  chatId: string,
+  visualReranker: VisualReranker,
+) {
+  return apiFetch<ChatDetail>(`/chats/${chatId}/reranker`, {
+    method: "PATCH",
+    body: JSON.stringify({ visualReranker }),
   });
 }
 
