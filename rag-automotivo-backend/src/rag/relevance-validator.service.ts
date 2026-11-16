@@ -149,6 +149,75 @@ const CONCEPTS: AutomotiveConcept[] = [
     id: 'spare_wheel',
     terms: [/\bspare (?:wheel|tire|tyre)\b/i, /\bestepe\b/i],
   },
+  {
+    id: 'hood_opening',
+    terms: [
+      /\b(?:opening|open|unlocking).{0,25}\b(?:hood|bonnet)\b/i,
+      /\b(?:hood|bonnet).{0,25}\b(?:lever|release|handle|latch)\b/i,
+      /\b(?:abrir|abro|abertura|alavanca|trava).{0,25}\bcap[oô]\b/i,
+      /\bcap[oô].{0,25}\b(?:abrir|abro|alavanca|trava)\b/i,
+    ],
+  },
+  {
+    id: 'oil_pressure_warning',
+    terms: [
+      /\b(?:engine )?oil pressure\b/i,
+      /\boil pressure (?:warning|indicator|light)\b/i,
+      /\b(?:aviso|luz|indicador).{0,35}\bpress[aã]o.{0,20}\b[oó]leo\b/i,
+      /\bpress[aã]o.{0,20}\b[oó]leo.{0,30}\b(?:baixa|aviso|luz|indicador)\b/i,
+    ],
+  },
+  {
+    id: 'tire_pressure_store',
+    terms: [
+      /\b(?:storing|store|save).{0,25}\b(?:tire|tyre) pressures?\b/i,
+      /\btire pressure monitoring\b/i,
+      /\b(?:salv|armazen).{0,30}\bpress[aã]o.{0,20}\bpneus?\b/i,
+      /\bpress[aã]o.{0,20}\bpneus?.{0,30}\b(?:salv|armazen|sistema)\b/i,
+    ],
+  },
+  {
+    id: 'cruise_control',
+    terms: [
+      /\bcruise control\b/i,
+      /\bcontrole de cruzeiro\b/i,
+    ],
+  },
+  {
+    id: 'fuel_filler_emergency_release',
+    terms: [
+      /\bfuel filler (?:door|flap).{0,30}\bemergency release\b/i,
+      /\bemergency release.{0,30}\bfuel filler (?:door|flap)\b/i,
+      /\b(?:portinhola|tampa).{0,40}\btanque.{0,45}\b(?:manual|emerg[eê]ncia|falha|falhar)\b/i,
+      /\b(?:manual|emerg[eê]ncia|falha|falhar).{0,45}\b(?:portinhola|tampa).{0,40}\btanque\b/i,
+    ],
+  },
+  {
+    id: 'washer_fluid',
+    terms: [
+      /\b(?:windshield|windscreen|headlamp|headlight) washer (?:fluid )?(?:system|reservoir|container|cap)?\b/i,
+      /\bwasher fluid(?: reservoir| container| cap|s)?\b/i,
+      /\b(?:reservat[oó]rio|tampa).{0,35}\b(?:limpador|lavador|para-brisa)\b/i,
+      /\b(?:limpador|lavador|para-brisa).{0,35}\b(?:reservat[oó]rio|tampa)\b/i,
+    ],
+  },
+  {
+    id: 'washer_capacity',
+    terms: [
+      /\b(?:washer|washing)[\s\S]{0,120}\b(?:filling )?capacity\b/i,
+      /\b(?:filling )?capacity[\s\S]{0,120}\b(?:washer|washing)\b/i,
+      /\bcapacidade.{0,35}\b(?:reservat[oó]rio|limpador|lavador)\b/i,
+    ],
+  },
+  {
+    id: 'jump_start_positive',
+    terms: [
+      /\bjump-starting connection\b/i,
+      /\b(?:jumper cables?|jump start).{0,35}\bpositive terminal\b/i,
+      /\b(?:cabo|terminal|polo).{0,25}\bpositivo.{0,45}\bpartida auxiliar\b/i,
+      /\bpartida auxiliar.{0,45}\b(?:positivo|terminal|polo)\b/i,
+    ],
+  },
 ];
 
 @Injectable()
@@ -168,6 +237,11 @@ export class RelevanceValidatorService {
         .filter((evaluation) => evaluation.isAnswerable)
         .map((evaluation) => evaluation.chunkId),
     );
+    for (const source of sources) {
+      if ((source.retrieval_scores?.structural_neighbor ?? 0) >= 0.8) {
+        acceptedIds.add(source.chunk_id);
+      }
+    }
 
     const accepted = sources.filter((source) =>
       acceptedIds.has(source.chunk_id),
@@ -180,26 +254,46 @@ export class RelevanceValidatorService {
       );
     const bestScore = rankedEvaluations[0]?.selectionScore ?? 0;
     const selectionThreshold =
-      bestScore > 0 ? Math.max(0.32, bestScore * 0.82, bestScore - 0.1) : 1;
+      bestScore > 0 ? Math.max(0.28, bestScore * 0.72, bestScore - 0.16) : 1;
     const selectedIds = new Set(
       rankedEvaluations
         .filter(
           (item) =>
             (item.evidenceClass === 'DIRECTLY_ANSWERS' ||
               item.evidenceClass === 'COMPLEMENTS') &&
-            (item.selectionScore ?? 0) >= selectionThreshold,
+            (item.selectionScore ?? 0) >=
+              ((sources.find((source) => source.chunk_id === item.chunkId)
+                ?.retrieval_scores?.structural_neighbor ?? 0) >= 0.8
+                ? 0.22
+                : selectionThreshold),
         )
-        .slice(0, 6)
+        .slice(0, 8)
         .map((item) => item.chunkId),
     );
+    for (const source of sources) {
+      if ((source.retrieval_scores?.structural_neighbor ?? 0) >= 0.8) {
+        selectedIds.add(source.chunk_id);
+      }
+    }
     const sourceById = new Map(
       accepted.map((source) => [source.chunk_id, source]),
     );
-    const selected = rankedEvaluations
+    const rankedSelected = rankedEvaluations
       .filter((item) => selectedIds.has(item.chunkId))
       .map((item) => sourceById.get(item.chunkId))
       .filter((source): source is RagSource => Boolean(source));
-    const selectedEvaluations = rankedEvaluations.filter((item) =>
+    const rankedSelectedIds = new Set(
+      rankedSelected.map((source) => source.chunk_id),
+    );
+    const selected = [
+      ...rankedSelected,
+      ...sources.filter(
+        (source) =>
+          selectedIds.has(source.chunk_id) &&
+          !rankedSelectedIds.has(source.chunk_id),
+      ),
+    ];
+    const selectedEvaluations = evaluations.filter((item) =>
       selectedIds.has(item.chunkId),
     );
     const directCount = selectedEvaluations.filter(
@@ -233,11 +327,13 @@ export class RelevanceValidatorService {
     source: RagSource,
     vehicle: RagConversationVehicle,
   ): RetrievedChunkEvaluation {
-    const evidenceLead = `${source.section_title ?? ''}\n${source.text}`.slice(
-      0,
-      1400,
-    );
-    const sourceConcepts = this.detectConcepts(evidenceLead);
+    const fullEvidence = `${source.section_title ?? ''}\n${source.text}`;
+    const evidenceLead = fullEvidence.slice(0, 4000);
+    const evidenceForConcepts =
+      fullEvidence.length > 8000
+        ? `${evidenceLead}\n${fullEvidence.slice(-4000)}`
+        : fullEvidence;
+    const sourceConcepts = this.detectConcepts(evidenceForConcepts);
     const sourceTerms = new Set(
       this.contentTerms(`${source.section_title ?? ''}\n${source.text}`, {}),
     );
@@ -248,10 +344,28 @@ export class RelevanceValidatorService {
     const knownComponentMatch = queryConcepts.some((concept) =>
       sourceConcepts.includes(concept),
     );
+    const specificConcept = [
+      'fuel_filler_emergency_release',
+      'oil_pressure_warning',
+      'tire_pressure_store',
+      'washer_capacity',
+      'jump_start_positive',
+      'hood_opening',
+      'cruise_control',
+      'spare_wheel',
+    ].find((concept) => queryConcepts.includes(concept));
+    const requiredConceptMatch = specificConcept
+      ? sourceConcepts.includes(specificConcept)
+      : knownComponentMatch;
+    const conceptCoverage =
+      queryConcepts.length > 0
+        ? queryConcepts.filter((concept) => sourceConcepts.includes(concept))
+            .length / queryConcepts.length
+        : 0;
     const componentMatch =
       queryConcepts.length === 0
         ? queryTermCoverage >= 0.12
-        : knownComponentMatch;
+        : requiredConceptMatch;
     const conflictingConcept =
       queryConcepts.length > 0 && sourceConcepts.length > 0 && !componentMatch;
     const semanticScore = Math.max(
@@ -265,9 +379,18 @@ export class RelevanceValidatorService {
       source.retrieval_scores?.domain ?? 0,
     );
     const finalScore = source.retrieval_scores?.final ?? source.score ?? 0;
+    const structuralNeighbor =
+      (source.retrieval_scores?.structural_neighbor ?? 0) >= 0.8;
     const intentMatch = !conflictingConcept;
+    const singleLetterSection = /^[A-Z]$/i.test(
+      (source.section_title ?? '').trim(),
+    );
+    const indexLike =
+      singleLetterSection &&
+      (/(?:^|\n)\s*ind\s*ex\s*(?:\n|$)/i.test(evidenceForConcepts) ||
+        (evidenceLead.match(/\.{3,}\s*\d+/g)?.length ?? 0) >= 3);
     const hasDirectEvidence =
-      knownComponentMatch ||
+      requiredConceptMatch ||
       queryTermCoverage >= 0.45 ||
       (queryTerms.length === 0 && semanticScore >= 0.62);
     const scorePass =
@@ -279,17 +402,23 @@ export class RelevanceValidatorService {
         0.5 * finalScore +
           0.25 * semanticScore +
           0.2 * queryTermCoverage +
-          (knownComponentMatch ? 0.05 : 0),
+          (knownComponentMatch ? 0.05 : 0) +
+          0.08 * conceptCoverage,
       ),
     );
     let evidenceClass: RetrievedChunkEvaluation['evidenceClass'];
-    if (!vehicleMatch || conflictingConcept) {
+    if (!vehicleMatch || conflictingConcept || indexLike) {
       evidenceClass = 'UNRELATED';
     } else if (
       hasDirectEvidence &&
-      (knownComponentMatch || queryTermCoverage >= 0.45)
+      (requiredConceptMatch || queryTermCoverage >= 0.45)
     ) {
       evidenceClass = 'DIRECTLY_ANSWERS';
+    } else if (
+      structuralNeighbor &&
+      scorePass
+    ) {
+      evidenceClass = 'COMPLEMENTS';
     } else if (
       queryConcepts.length === 0 &&
       scorePass &&
@@ -305,11 +434,14 @@ export class RelevanceValidatorService {
       vehicleMatch &&
       intentMatch &&
       scorePass &&
+      !indexLike &&
       (evidenceClass === 'DIRECTLY_ANSWERS' || evidenceClass === 'COMPLEMENTS');
 
     let rejectionReason: string | undefined;
     if (!vehicleMatch) {
       rejectionReason = 'vehicle_mismatch';
+    } else if (indexLike) {
+      rejectionReason = 'index_reference_not_answer_evidence';
     } else if (conflictingConcept) {
       rejectionReason = `component_conflict:${sourceConcepts.join(',')}`;
     } else if (evidenceClass === 'ONLY_RELATED') {
@@ -393,13 +525,23 @@ export class RelevanceValidatorService {
     );
     const model = normalize(source.metadata.vehicle_model);
     const year = String(source.metadata.vehicle_year ?? '');
+    const requestedModel = normalize(requested.model);
+    const modelAliases: Record<string, string[]> = {
+      '750il': ['750il', '7 series'],
+      '750i': ['750i', '7 series'],
+      '740i': ['740i', '7 series'],
+      '330': ['330', '3 series'],
+    };
 
     if (requested.brand && make !== normalize(requested.brand)) {
       return false;
     }
     if (
       requested.model &&
-      !model.split(' ').includes(normalize(requested.model))
+      !model.split(' ').includes(requestedModel) &&
+      !(modelAliases[requestedModel] ?? [requestedModel]).some(
+        (alias) => model === alias || model.replace(/\s+/g, '') === alias.replace(/\s+/g, ''),
+      )
     ) {
       return false;
     }

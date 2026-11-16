@@ -36,9 +36,9 @@ export class QwenImageRerankerService {
   private readonly model =
     process.env.RAG_QWEN_RERANKER_MODEL ?? 'qwen2.5vl:7b';
   private readonly projectRoot = resolve(process.cwd(), '..');
-  private readonly maxImages = Number(process.env.RAG_QWEN_MAX_IMAGES ?? 5);
+  private readonly maxImages = Number(process.env.RAG_QWEN_MAX_IMAGES ?? 2);
   private readonly candidateLimit = Number(
-    process.env.RAG_QWEN_CANDIDATE_LIMIT ?? 12,
+    process.env.RAG_QWEN_CANDIDATE_LIMIT ?? 8,
   );
   private readonly threshold = Number(process.env.RAG_QWEN_THRESHOLD ?? 0.55);
   private readonly timeoutMs = Number(
@@ -49,7 +49,11 @@ export class QwenImageRerankerService {
 
   async rerankImages(input: QwenRerankInput): Promise<ImageRerankResult> {
     const candidates = this.buildCandidates(input)
-      .sort((left, right) => right.textScore - left.textScore)
+      .sort(
+        (left, right) =>
+          right.textScore + right.clipScore -
+          (left.textScore + left.clipScore),
+      )
       .slice(0, this.candidateLimit);
 
     if (candidates.length === 0) {
@@ -140,7 +144,7 @@ export class QwenImageRerankerService {
     candidate: QwenCandidate,
     useImageInput: boolean,
   ): Promise<QwenVerdict> {
-    if (candidate.textScore < 0.18) {
+    if (!useImageInput && candidate.textScore < 0.18) {
       return {
         relevant: false,
         score: Math.min(0.35, candidate.textScore),
@@ -300,6 +304,11 @@ export class QwenImageRerankerService {
       'Use a imagem quando ela estiver disponivel. Use tambem legenda, OCR e contexto do chunk.',
       'Responda somente JSON valido no formato {"relevant":true,"score":0.82,"reason":"motivo curto"}.',
       'score deve ir de 0 a 1. Seja conservador: capa, foto generica, pagina inicial e imagem sem evidencia devem ser false.',
+      'Uma imagem so e relevante se mostrar diretamente a peca, simbolo, comando, etiqueta ou etapa operacional perguntada.',
+      'Rejeite imagens apenas proximas na pagina, diagramas de outro componente e duplicatas sem ganho informacional.',
+      'Julgue primeiro o que esta VISIVEL na imagem. O texto do chunk e apenas apoio e nao torna uma imagem relevante por si so.',
+      'Use score >= 0.80 apenas quando o alvo visual estiver claramente presente; use <= 0.35 para pagina apenas relacionada.',
+      `Criterio visual especifico: ${this.visualTargetGuidance(input.resolvedQuery)}`,
       '',
       `Pergunta: ${input.resolvedQuery}`,
       `Intencao: ${input.intent}`,
@@ -308,6 +317,33 @@ export class QwenImageRerankerService {
       `Documento: ${candidate.source ?? 'desconhecido'}, pagina ${candidate.page}`,
       `Legenda/OCR/contexto: ${candidate.textPreview}`,
     ].join('\n');
+  }
+
+  private visualTargetGuidance(query: string): string {
+    const normalized = this.normalizeText(query);
+    if (
+      /(?:manual|emergencia|falha|falhar).{0,70}(?:portinhola|tanque)|(?:portinhola|tanque).{0,70}(?:manual|emergencia|falha|falhar)/.test(
+        normalized,
+      )
+    ) {
+      return 'aceite somente se mostrar a liberacao de emergencia da portinhola, como a cobertura da lanterna direita e a alca no porta-malas; rejeite abastecimento comum e AdBlue.';
+    }
+    if (/capo|hood|bonnet/.test(normalized)) {
+      return 'aceite a alavanca interna ou a trava dianteira usada para abrir o capo; rejeite vistas genericas do motor.';
+    }
+    if (/estepe|spare wheel|coluna b|b-pillar/.test(normalized)) {
+      return 'aceite a etiqueta de pressao ou sua localizacao na coluna B do motorista; rejeite rodas genericas.';
+    }
+    if (/limpador|lavador|washer/.test(normalized)) {
+      return 'aceite a tampa/simbolo do reservatorio do lavador ou o diagrama que a identifica; rejeite outros reservatorios.';
+    }
+    if (/partida auxiliar|jump.start|positivo|positive terminal/.test(normalized)) {
+      return 'aceite o terminal positivo de partida auxiliar e sua tampa marcada com +; rejeite bateria ou cabos sem esse ponto identificado.';
+    }
+    if (/pressao.{0,25}oleo|oleo.{0,25}pressao|oil pressure/.test(normalized)) {
+      return 'aceite o simbolo/aviso de pressao do oleo ou a pagina que o identifica claramente; rejeite troca de oleo generica.';
+    }
+    return 'aceite somente se a imagem mostrar diretamente o objeto ou a operacao perguntada.';
   }
 
   private parseVerdict(text: string, candidate: QwenCandidate): QwenVerdict {
@@ -383,13 +419,16 @@ export class QwenImageRerankerService {
         );
         const textScore = this.scoreTextEvidence(ocrText, queryTerms);
         const unreadableReason = this.getUnreadableReason(imagePath);
+        const clipPrior = source.clip_results?.find(
+          (result) => result.imagePath === imagePath,
+        )?.score;
         const candidate: QwenCandidate = {
           imageId: imagePath,
           imagePath,
           page: source.page_start,
           caption,
           ocrText,
-          clipScore: textScore,
+          clipScore: clipPrior ?? textScore,
           textScore,
           isRelevant: false,
           rejectionReason: unreadableReason,

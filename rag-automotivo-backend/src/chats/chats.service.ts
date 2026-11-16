@@ -255,6 +255,7 @@ export class ChatsService {
           resolvedQuery: event.resolvedQuery,
           isFollowUp: event.isFollowUp,
           visualReranker: event.visualReranker,
+          multimodalDiagnostics: event.multimodalDiagnostics,
         };
       }
     }
@@ -457,6 +458,7 @@ export class ChatsService {
       resolved_query: ragAnswer.resolvedQuery,
       is_follow_up: ragAnswer.isFollowUp,
       visual_reranker: ragAnswer.visualReranker,
+      multimodal_diagnostics: ragAnswer.multimodalDiagnostics,
       sources: sources.map((source) => ({
         score: source.score,
         chunk_id: source.chunk_id,

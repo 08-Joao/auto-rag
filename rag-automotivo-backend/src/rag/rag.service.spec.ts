@@ -6,6 +6,66 @@ import type { RagConversationState, RagSource } from './types';
 import { RunnableLambda } from '@langchain/core/runnables';
 
 describe('RagService conversation rewrite', () => {
+  it('extrai normas de oleo sem inventar viscosidade ou relacao com combustivel', () => {
+    const service = new RagService(
+      new QueryRewriterService(),
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      new RelevanceValidatorService(),
+    );
+    const source = {
+      score: 0.9,
+      chunk_id: 'oil-spec',
+      document_name: '2008-audi-a4.pdf',
+      page_start: 325,
+      page_end: 326,
+      text: 'Inspection Service VW 502 00, VW 503 00 VW 504 00. LongLife Service VW 503 00, VW 504 00.',
+      image_paths: [],
+      metadata: {},
+    } as RagSource;
+
+    const answer = (service as any).buildGroundedExtractiveAnswer(
+      'Qual óleo é recomendado?',
+      [source],
+    );
+
+    expect(answer).toContain('VW 502 00, VW 503 00, VW 504 00');
+    expect(answer).toContain('não uma viscosidade SAE específica');
+    expect(answer).not.toMatch(/premium|gasolina|combustível/i);
+  });
+
+  it('extrai o procedimento da portinhola sem inventar o lado da carroceria', () => {
+    const service = new RagService(
+      new QueryRewriterService(),
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      new RelevanceValidatorService(),
+    );
+    const source = {
+      score: 0.9,
+      chunk_id: 'fuel-flap',
+      document_name: '2008-audi-a4.pdf',
+      page_start: 254,
+      page_end: 254,
+      text: 'Press the left side of the flap to open it. Unscrew the tank cap anti-clockwise. Automatically by the central locking.',
+      image_paths: [],
+      metadata: {},
+    } as RagSource;
+
+    const answer = (service as any).buildGroundedExtractiveAnswer(
+      'Onde fica a portinhola do tanque e como abrir?',
+      [source],
+    );
+
+    expect(answer).toContain('não informa com clareza');
+    expect(answer).toContain('sentido anti-horário');
+    expect(answer).not.toMatch(/traseira direita|traseira esquerda/);
+  });
+
   it('remove referencias a figuras que nao foram anexadas', () => {
     const service = new RagService(
       new QueryRewriterService(),

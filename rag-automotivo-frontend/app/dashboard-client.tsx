@@ -1,61 +1,29 @@
 "use client";
 
-import {
-  Bot,
-  Car,
-  ChevronRight,
-  FileText,
-  ImageIcon,
-  LogOut,
-  Menu,
-  MessageSquare,
-  Plus,
-  Send,
-  Share2,
-  Square,
-  Trash2,
-  UserCircle,
-} from "lucide-react";
+import { AlertCircle, X } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
+import { AppSidebar } from "@/components/chat/app-sidebar";
+import { ChatComposer } from "@/components/chat/chat-composer";
+import { ChatHeader } from "@/components/chat/chat-header";
+import { ChatMessages } from "@/components/chat/chat-message";
+import { EmptyChat } from "@/components/chat/empty-chat";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Textarea } from "@/components/ui/textarea";
+import { Skeleton } from "@/components/ui/skeleton";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { useSidebarContext } from "@/contexts/sidebar-context";
-import { cn } from "@/lib/utils";
+import { getMe, logout, type AuthUser } from "@/services/auth";
 import {
   createChat,
   deleteChat,
   getChat,
-  getRagImageUrl,
   streamChatMessage,
   updateChatReranker,
   type ChatDetail,
   type ChatMessage,
-  type RagSource,
   type VisualReranker,
 } from "@/services/chats";
-import { getMe, logout, type AuthUser } from "@/services/auth";
-
-function getInitials(name?: string) {
-  if (!name) {
-    return "US";
-  }
-
-  return name
-    .split(" ")
-    .slice(0, 2)
-    .map((part) => part[0])
-    .join("")
-    .toUpperCase();
-}
 
 function createOptimisticMessage(
   content: string,
@@ -70,296 +38,35 @@ function createOptimisticMessage(
   };
 }
 
-function getSources(message: ChatMessage): RagSource[] {
-  return message.metadata?.sources ?? [];
-}
-
-function getImagePaths(message: ChatMessage) {
-  const approvedImages = message.metadata?.images ?? [];
-  if (approvedImages.length > 0) {
-    return Array.from(new Set(approvedImages.map((image) => image.imagePath)));
-  }
-
-  const sources = getSources(message);
-  return Array.from(
-    new Set(
-      sources.flatMap((source) =>
-        source.clip_results?.length
-          ? source.clip_results.map((result) => result.imagePath)
-          : [],
-      ),
-    ),
-  );
-}
-
-function shouldShowImageGallery(message: ChatMessage) {
-  return (
-    message.metadata?.return_images === true ||
-    message.metadata?.visual_intent === true
-  );
-}
-
-function titleCase(text: string) {
-  return text
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((word) =>
-      word.length <= 3
-        ? word.toUpperCase()
-        : `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}`,
-    )
-    .join(" ");
-}
-
-function dedupeRepeatedWords(words: string[]) {
-  const midpoint = Math.floor(words.length / 2);
-
+function friendlyError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const normalized = message.toLowerCase();
+  if (normalized.includes("failed to fetch") || normalized.includes("network"))
+    return "Não foi possível conectar ao servidor. Verifique se o backend está em execução.";
+  if (normalized.includes("ollama") || normalized.includes("model"))
+    return "O modelo local está indisponível no momento. Verifique o Ollama e tente novamente.";
+  if (normalized.includes("timeout") || normalized.includes("tempo limite"))
+    return "A consulta demorou mais que o esperado. Tente novamente em alguns instantes.";
   if (
-    words.length % 2 === 0 &&
-    words.slice(0, midpoint).join(" ") === words.slice(midpoint).join(" ")
-  ) {
-    return words.slice(0, midpoint);
-  }
-
-  return words;
+    normalized.includes("índice") ||
+    normalized.includes("indice") ||
+    normalized.includes("retrieval")
+  )
+    return "Não foi possível consultar os manuais indexados. Tente novamente ou revise os filtros da pergunta.";
+  return message || "Não foi possível concluir esta ação. Tente novamente.";
 }
 
-function formatSourceDocumentName(source: RagSource) {
-  const rawName = source.pdf_path?.split("/").pop() ?? source.document_name;
-  const baseName = rawName
-    .replace(/\.pdf$/i, "")
-    .replace(/_[a-f0-9]{12,}$/i, "")
-    .replace(/_[a-f0-9-]{12,}$/i, "");
-  const normalized = baseName.replace(/_/g, "-");
-  const parts = normalized.split("-").filter(Boolean);
-  const year = parts.find((part) => /^(19|20)\d{2}$/.test(part));
-
-  if (year && parts[0] === year && parts.length > 2) {
-    const brand = parts[1];
-    const modelWords = dedupeRepeatedWords(
-      parts.slice(2).filter((part) => part !== year),
-    );
-
-    if (brand && modelWords.length > 0) {
-      return `${titleCase([brand, ...modelWords].join(" "))} ${year}`;
-    }
-  }
-
-  return titleCase(
-    normalized
-      .replace(/(?:^|-)(?:manual|owner|owners|proprietario)(?:-|$)/gi, " ")
-      .replace(/-/g, " ")
-      .trim(),
-  );
-}
-
-function SourceItem({
-  index,
-  source,
-  visualIntent,
-}: {
-  index: number;
-  source: RagSource;
-  visualIntent: boolean;
-}) {
-  const images = visualIntent
-    ? (source.clip_results ?? []).map((result) => result.imagePath)
-    : [];
-  const documentName = formatSourceDocumentName(source);
-  const pageLabel =
-    source.page_start === source.page_end
-      ? `Página ${source.page_start}`
-      : `Páginas ${source.page_start} a ${source.page_end}`;
-
+function ChatLoading() {
   return (
-    <div className="space-y-2 rounded-md border border-border bg-background p-3">
-      <div className="flex items-start gap-3">
-        <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted">
-          <FileText className="size-3.5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <p className="text-xs font-semibold">Fonte {index + 1}</p>
-            <p className="text-xs text-muted-foreground">
-              {pageLabel}
-              {source.metadata?.brand ? ` · ${source.metadata.brand}` : ""}
-            </p>
-          </div>
-          <p
-            className="mt-1 truncate text-xs text-foreground"
-            title={source.document_name}
-          >
-            {documentName}
-          </p>
-          {source.section_title && (
-            <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-              {source.section_title}
-            </p>
-          )}
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            {images.length > 0 && (
-              <span className="inline-flex items-center gap-1">
-                <ImageIcon className="size-3" />
-                {images.length} imagem(ns)
-              </span>
-            )}
-          </div>
-        </div>
+    <div className="mx-auto w-full max-w-3xl space-y-8 px-4 py-10 sm:px-6">
+      <div className="flex justify-end">
+        <Skeleton className="h-16 w-2/5" />
       </div>
-
-      {images.length > 0 && (
-        <div className="grid grid-cols-3 gap-2 pl-10">
-          {images.slice(0, 3).map((imagePath) => (
-            <a
-              href={getRagImageUrl(imagePath)}
-              key={imagePath}
-              rel="noreferrer"
-              target="_blank"
-            >
-              <img
-                alt="Imagem associada ao chunk"
-                className="aspect-video rounded-md border border-border bg-card object-contain"
-                src={getRagImageUrl(imagePath)}
-              />
-            </a>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SourcesDropdown({
-  sources,
-  visualIntent,
-}: {
-  sources: RagSource[];
-  visualIntent: boolean;
-}) {
-  return (
-    <HoverCard openDelay={120}>
-      <HoverCardTrigger asChild>
-        <Button className="h-8 rounded-lg px-3 text-xs" variant="outline">
-          <FileText className="size-3.5" />
-          Fontes
-          <span className="rounded bg-muted px-1.5 py-0.5 text-[0.625rem] leading-none text-muted-foreground">
-            {sources.length}
-          </span>
-          <ChevronRight className="size-3.5" />
-        </Button>
-      </HoverCardTrigger>
-      <HoverCardContent
-        align="start"
-        className="max-h-[min(32rem,calc(100vh-8rem))] w-[32rem] max-w-[calc(100vw-2rem)] overflow-y-auto p-3"
-      >
-        <div className="space-y-2">
-          <div className="flex items-center justify-between gap-3 px-1 pb-1">
-            <p className="text-sm font-semibold">Fontes recuperadas</p>
-            <p className="text-xs text-muted-foreground">
-              {sources.length} fonte(s)
-            </p>
-          </div>
-          {sources.map((source, index) => (
-            <SourceItem
-              index={index}
-              key={source.chunk_id}
-              source={source}
-              visualIntent={visualIntent}
-            />
-          ))}
-        </div>
-      </HoverCardContent>
-    </HoverCard>
-  );
-}
-
-function MessageSources({
-  isStreaming,
-  message,
-}: {
-  isStreaming: boolean;
-  message: ChatMessage;
-}) {
-  const sources = getSources(message);
-  const imagePaths = getImagePaths(message);
-  const visualIntent = shouldShowImageGallery(message);
-  const status = message.metadata?.status;
-
-  if (isStreaming || sources.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="mt-4 space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <SourcesDropdown sources={sources} visualIntent={visualIntent} />
-        {status && status !== "answered" && (
-          <span className="rounded-md border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
-            {status}
-          </span>
-        )}
+      <div className="space-y-3">
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-5/6" />
+        <Skeleton className="h-4 w-3/5" />
       </div>
-
-      {visualIntent &&
-        imagePaths.length > 0 &&
-        shouldShowImageGallery(message) && (
-          <div className="grid gap-3 sm:grid-cols-2">
-            {imagePaths.slice(0, 4).map((imagePath) => (
-              <a
-                className="group overflow-hidden rounded-lg border border-border bg-card"
-                href={getRagImageUrl(imagePath)}
-                key={imagePath}
-                rel="noreferrer"
-                target="_blank"
-              >
-                <img
-                  alt="Imagem recuperada do manual"
-                  className="h-44 w-full object-contain p-2 transition group-hover:bg-muted"
-                  src={getRagImageUrl(imagePath)}
-                />
-              </a>
-            ))}
-          </div>
-        )}
-    </div>
-  );
-}
-
-function AssistantTyping() {
-  return (
-    <span className="inline-flex items-center gap-1 text-muted-foreground">
-      <span className="size-1.5 animate-pulse rounded-full bg-current" />
-      <span className="size-1.5 animate-pulse rounded-full bg-current [animation-delay:120ms]" />
-      <span className="size-1.5 animate-pulse rounded-full bg-current [animation-delay:240ms]" />
-    </span>
-  );
-}
-
-function InlineMarkdown({ text }: { text: string }) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-
-  return (
-    <>
-      {parts.map((part, index) => {
-        if (part.startsWith("**") && part.endsWith("**")) {
-          return <strong key={index}>{part.slice(2, -2)}</strong>;
-        }
-
-        return <span key={index}>{part}</span>;
-      })}
-    </>
-  );
-}
-
-function MarkdownText({ text }: { text: string }) {
-  return (
-    <div className="whitespace-pre-wrap">
-      {text.split("\n").map((line, index, lines) => (
-        <span key={`${index}-${line}`}>
-          <InlineMarkdown text={line} />
-          {index < lines.length - 1 && "\n"}
-        </span>
-      ))}
     </div>
   );
 }
@@ -378,115 +85,115 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
   const [activeChat, setActiveChat] = useState<ChatDetail | null>(null);
   const [prompt, setPrompt] = useState("");
   const [isBooting, setIsBooting] = useState(true);
+  const [isChatLoading, setIsChatLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isUpdatingReranker, setIsUpdatingReranker] = useState(false);
   const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
-  const [shareLabel, setShareLabel] = useState("Compartilhar");
+  const [shareLabel, setShareLabel] = useState("Copiar link");
+  const [requestStatus, setRequestStatus] = useState("");
+  const [applicationError, setApplicationError] = useState("");
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingChatIdRef = useRef<string | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  const initials = getInitials(user?.name);
   const activeMessages = activeChat?.message ?? [];
-
-  const suggestions = useMemo(
-    () => [
-      "Audi A4 2008: qual óleo recomendado?",
-      "Honda Civic 2014: como calibrar pneus?",
-      "Jeep Renegade 2022: resetar manutenção",
-      "Chevrolet Onix 2020: onde ficam os fusíveis?",
-    ],
-    [],
-  );
+  const lastMessageContent = activeMessages.at(-1)?.content;
 
   function focusPromptInput() {
-    window.setTimeout(() => {
-      promptRef.current?.focus();
-    }, 0);
+    window.setTimeout(() => promptRef.current?.focus(), 0);
   }
 
   useEffect(() => {
     let isMounted = true;
-
     Promise.all([getMe(), loadChats()])
       .then(async ([currentUser, chatList]) => {
-        if (!isMounted) {
-          return;
-        }
-
+        if (!isMounted) return;
         setUser(currentUser);
-
         const chatIdToOpen = initialChatId ?? chatList[0]?.id;
-
         if (chatIdToOpen) {
           const detail = await getChat(chatIdToOpen);
           if (isMounted && streamingChatIdRef.current !== detail.id) {
             setActiveChat(detail);
-            router.replace(`/c/${detail.id}`);
-            focusPromptInput();
+            if (!initialChatId) router.replace(`/c/${detail.id}`);
           }
         }
       })
-      .catch(() => {
-        router.replace("/signin");
-      })
-      .finally(() => {
-        if (isMounted) {
-          setIsBooting(false);
-        }
-      });
-
+      .catch(() => router.replace("/signin"))
+      .finally(() => isMounted && setIsBooting(false));
     return () => {
       isMounted = false;
       abortControllerRef.current?.abort();
     };
   }, [initialChatId, loadChats, router]);
 
+  useEffect(() => {
+    if (activeMessages.length > 0)
+      messagesEndRef.current?.scrollIntoView({
+        behavior: isSending ? "smooth" : "auto",
+        block: "end",
+      });
+  }, [activeMessages.length, isSending, lastMessageContent]);
+
   async function handleCreateChat() {
     abortControllerRef.current?.abort();
+    setApplicationError("");
     if (activeChat && activeChat.message.length === 0) {
       setPrompt("");
       setIsSidebarOpen(false);
-      setIsSending(false);
-      router.replace(`/c/${activeChat.id}`);
       focusPromptInput();
       return;
     }
-
-    const chat = await createChat();
-    upsertChat(chat);
-    setActiveChat(chat);
-    router.push(`/c/${chat.id}`);
-    setPrompt("");
-    setIsSidebarOpen(false);
-    setIsSending(false);
-    focusPromptInput();
+    try {
+      const chat = await createChat();
+      upsertChat(chat);
+      setActiveChat(chat);
+      setPrompt("");
+      setIsSidebarOpen(false);
+      router.push(`/c/${chat.id}`);
+      focusPromptInput();
+    } catch (error) {
+      setApplicationError(friendlyError(error));
+    }
   }
 
   async function handleSelectChat(chatId: string) {
+    if (chatId === activeChat?.id) {
+      setIsSidebarOpen(false);
+      return;
+    }
     abortControllerRef.current?.abort();
     setIsSending(false);
-    setActiveChat(await getChat(chatId));
-    router.push(`/c/${chatId}`);
+    setIsChatLoading(true);
+    setApplicationError("");
     setIsSidebarOpen(false);
-    focusPromptInput();
+    try {
+      const chat = await getChat(chatId);
+      setActiveChat(chat);
+      router.push(`/c/${chatId}`);
+      focusPromptInput();
+    } catch (error) {
+      setApplicationError(friendlyError(error));
+    } finally {
+      setIsChatLoading(false);
+    }
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const content = prompt.trim();
-
-    if (!content || isSending) {
+    if (!content || isSending) return;
+    let chat: ChatDetail;
+    try {
+      chat = activeChat ?? (await createChat());
+    } catch (error) {
+      setApplicationError(friendlyError(error));
       return;
     }
-
-    const chat = activeChat ?? (await createChat());
-    if (!activeChat) {
-      upsertChat(chat);
-    }
-    router.replace(`/c/${chat.id}`);
+    const createdForSubmit = !activeChat;
+    if (!activeChat) upsertChat(chat);
     const userMessage = createOptimisticMessage(content, "USER");
     const assistantMessage = createOptimisticMessage("", "SYSTEM");
     const controller = new AbortController();
@@ -494,10 +201,11 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
       ...chat,
       message: [...chat.message, userMessage, assistantMessage],
     };
-
     abortControllerRef.current = controller;
     streamingChatIdRef.current = chat.id;
     setIsSending(true);
+    setApplicationError("");
+    setRequestStatus("Consultando os manuais…");
     setPrompt("");
     setActiveChat(optimisticChat);
     upsertChat(optimisticChat);
@@ -505,52 +213,53 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
     try {
       await streamChatMessage(chat.id, content, {
         signal: controller.signal,
-        onEvent: (event) => {
-          if (event.type === "user_message") {
+        onEvent: (streamEvent) => {
+          if (streamEvent.type === "user_message")
             setActiveChat((current) =>
               current
                 ? {
                     ...current,
                     message: current.message.map((message) =>
-                      message.id === userMessage.id ? event.message : message,
+                      message.id === userMessage.id
+                        ? streamEvent.message
+                        : message,
                     ),
                   }
                 : current,
             );
-          }
-
-          if (event.type === "assistant_start") {
+          if (streamEvent.type === "assistant_start")
             setActiveChat((current) =>
               current
                 ? {
                     ...current,
                     message: current.message.map((message) =>
                       message.id === assistantMessage.id
-                        ? { ...message, id: event.messageId }
+                        ? { ...message, id: streamEvent.messageId }
                         : message,
                     ),
                   }
                 : current,
             );
-          }
-
-          if (event.type === "sources") {
+          if (streamEvent.type === "sources") {
+            setRequestStatus(
+              streamEvent.sources.length > 0
+                ? "Analisando as fontes recuperadas…"
+                : "Verificando evidências disponíveis…",
+            );
             setActiveChat((current) =>
               current
                 ? {
                     ...current,
-                    message: current.message.map((message) =>
-                      message.id === assistantMessage.id ||
-                      message.id.startsWith("tmp-") ||
-                      message.id ===
-                        current.message[current.message.length - 1]?.id
+                    message: current.message.map((message, index) =>
+                      index === current.message.length - 1
                         ? {
                             ...message,
                             metadata: {
-                              sources: event.sources,
+                              sources: streamEvent.sources,
                               return_images:
-                                event.returnImages ?? event.visualIntent,
-                              visual_intent: event.visualIntent,
+                                streamEvent.returnImages ??
+                                streamEvent.visualIntent,
+                              visual_intent: streamEvent.visualIntent,
                             },
                           }
                         : message,
@@ -559,35 +268,39 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
                 : current,
             );
           }
-
-          if (event.type === "token") {
+          if (streamEvent.type === "token") {
+            setRequestStatus("Gerando resposta…");
             setActiveChat((current) =>
               current
                 ? {
                     ...current,
                     message: current.message.map((message, index) =>
                       index === current.message.length - 1
-                        ? { ...message, content: message.content + event.token }
+                        ? {
+                            ...message,
+                            content: message.content + streamEvent.token,
+                          }
                         : message,
                     ),
                   }
                 : current,
             );
           }
-
-          if (event.type === "done") {
-            setActiveChat(event.chat);
-            upsertChat(event.chat);
+          if (streamEvent.type === "done") {
+            setActiveChat(streamEvent.chat);
+            upsertChat(streamEvent.chat);
+            if (createdForSubmit) router.replace(`/c/${streamEvent.chat.id}`);
           }
-
-          if (event.type === "error") {
+          if (streamEvent.type === "error") {
+            const errorMessage = friendlyError(streamEvent.message);
+            setApplicationError(errorMessage);
             setActiveChat((current) =>
               current
                 ? {
                     ...current,
                     message: current.message.map((message, index) =>
                       index === current.message.length - 1
-                        ? { ...message, content: event.message }
+                        ? { ...message, content: errorMessage }
                         : message,
                     ),
                   }
@@ -598,31 +311,28 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
       });
     } catch (error) {
       if (!controller.signal.aborted) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Nao foi possivel enviar a mensagem.";
+        const errorMessage = friendlyError(error);
+        setApplicationError(errorMessage);
         setActiveChat((current) =>
           current
             ? {
                 ...current,
-                message: current.message.map((chatMessage, index) =>
+                message: current.message.map((message, index) =>
                   index === current.message.length - 1
-                    ? { ...chatMessage, content: message }
-                    : chatMessage,
+                    ? { ...message, content: errorMessage }
+                    : message,
                 ),
               }
             : current,
         );
       }
     } finally {
-      if (abortControllerRef.current === controller) {
+      if (abortControllerRef.current === controller)
         abortControllerRef.current = null;
-      }
-      if (streamingChatIdRef.current === chat.id) {
+      if (streamingChatIdRef.current === chat.id)
         streamingChatIdRef.current = null;
-      }
       setIsSending(false);
+      setRequestStatus("");
       focusPromptInput();
     }
   }
@@ -631,42 +341,39 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
     setIsSending(false);
+    setRequestStatus("");
     if (activeChat) {
-      const chat = await getChat(activeChat.id);
-      setActiveChat(chat);
-      upsertChat(chat);
-      focusPromptInput();
+      try {
+        const chat = await getChat(activeChat.id);
+        setActiveChat(chat);
+        upsertChat(chat);
+      } catch (error) {
+        setApplicationError(friendlyError(error));
+      }
     }
+    focusPromptInput();
   }
 
   async function handleDeleteChat(chatId: string) {
-    const chat = chats.find((item) => item.id === chatId);
-    const confirmed = window.confirm(
-      `Excluir "${chat?.title ?? "este chat"}"? Essa acao nao pode ser desfeita.`,
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
     abortControllerRef.current?.abort();
     setDeletingChatId(chatId);
-
+    setApplicationError("");
     try {
       await deleteChat(chatId);
       const nextChat = chats.find((item) => item.id !== chatId);
       removeChat(chatId);
-
       if (activeChat?.id === chatId) {
-        setActiveChat(null);
         if (nextChat) {
           const detail = await getChat(nextChat.id);
           setActiveChat(detail);
           router.replace(`/c/${detail.id}`);
         } else {
+          setActiveChat(null);
           router.replace("/");
         }
       }
+    } catch (error) {
+      setApplicationError(friendlyError(error));
     } finally {
       setDeletingChatId(null);
       setIsSending(false);
@@ -675,43 +382,38 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
   }
 
   async function handleShareChat() {
-    if (!activeChat) {
-      return;
+    if (!activeChat) return;
+    try {
+      await navigator.clipboard.writeText(
+        `${window.location.origin}/c/${activeChat.id}`,
+      );
+      setShareLabel("Link copiado");
+      window.setTimeout(() => setShareLabel("Copiar link"), 1600);
+    } catch {
+      setApplicationError("Não foi possível copiar o link desta conversa.");
     }
-
-    const url = `${window.location.origin}/c/${activeChat.id}`;
-    await navigator.clipboard.writeText(url);
-    setShareLabel("Copiado");
-    window.setTimeout(() => setShareLabel("Compartilhar"), 1600);
   }
 
   async function handleRerankerChange(visualReranker: VisualReranker) {
-    if (!activeChat || isSending) {
+    if (
+      !activeChat ||
+      isSending ||
+      visualReranker === activeChat.visualReranker
+    )
       return;
-    }
-
-    const previousChat = activeChat;
-    const optimisticChat = { ...activeChat, visualReranker };
-
+    const previous = activeChat;
+    const optimistic = { ...activeChat, visualReranker };
     setIsUpdatingReranker(true);
-    setActiveChat(optimisticChat);
-    upsertChat(optimisticChat);
-
+    setActiveChat(optimistic);
+    upsertChat(optimistic);
     try {
-      const updatedChat = await updateChatReranker(
-        activeChat.id,
-        visualReranker,
-      );
-      setActiveChat(updatedChat);
-      upsertChat(updatedChat);
+      const updated = await updateChatReranker(activeChat.id, visualReranker);
+      setActiveChat(updated);
+      upsertChat(updated);
     } catch (error) {
-      setActiveChat(previousChat);
-      upsertChat(previousChat);
-      window.alert(
-        error instanceof Error
-          ? error.message
-          : "Nao foi possivel atualizar o reranker.",
-      );
+      setActiveChat(previous);
+      upsertChat(previous);
+      setApplicationError(friendlyError(error));
     } finally {
       setIsUpdatingReranker(false);
     }
@@ -728,304 +430,90 @@ export function DashboardClient({ initialChatId }: { initialChatId?: string }) {
     }
   }
 
-  const sidebar = (
-    <aside
-      className={cn(
-        "fixed inset-y-0 left-0 z-30 flex w-80 flex-col border-r border-sidebar-active bg-sidebar-bg text-sidebar-text transition-transform lg:static lg:translate-x-0",
-        isSidebarOpen ? "translate-x-0" : "-translate-x-full",
-      )}
-    >
-      <div className="flex h-16 items-center justify-between border-b border-sidebar-active px-4">
-        <div className="flex items-center gap-3">
-          <div className="flex size-10 items-center justify-center rounded-lg border border-sidebar-active bg-sidebar-hover text-primary-foreground">
-            <Car className="size-5" />
-          </div>
-          <div>
-            <p className="text-sm text-sidebar-text-muted">RAG Automotivo</p>
-            <h1 className="font-semibold text-primary-foreground">Chats</h1>
-          </div>
-        </div>
-      </div>
-
-      <div className="p-4">
-        <Button
-          className="w-full"
-          onClick={handleCreateChat}
-          variant="secondary"
-        >
-          <Plus />
-          Novo chat
-        </Button>
-      </div>
-
-      <ScrollArea className="min-h-0 flex-1 px-3">
-        <div className="space-y-1 pb-4">
-          {chats.map((chat) => {
-            const lastMessage =
-              chat.message[0]?.content ?? "Sem mensagens ainda";
-            return (
-              <div className="group relative" key={chat.id}>
-                <Button
-                  className="h-auto w-full justify-start px-3 py-3 pr-12 text-left"
-                  data-active={activeChat?.id === chat.id}
-                  onClick={() => handleSelectChat(chat.id)}
-                  variant="sidebar"
-                >
-                  <MessageSquare className="mt-0.5" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium text-primary-foreground">
-                      {chat.title}
-                    </span>
-                    <span className="mt-1 block truncate text-xs text-sidebar-text-muted">
-                      {lastMessage}
-                    </span>
-                  </span>
-                </Button>
-                <Button
-                  aria-label={`Excluir chat ${chat.title}`}
-                  className="absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2 px-0 text-sidebar-text-muted opacity-100 hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
-                  disabled={deletingChatId === chat.id}
-                  onClick={() => handleDeleteChat(chat.id)}
-                  size="icon"
-                  type="button"
-                  variant="sidebar"
-                >
-                  <Trash2 className="size-4" />
-                </Button>
-              </div>
-            );
-          })}
-
-          {!isBooting && sidebarStatus !== "loading" && chats.length === 0 && (
-            <div className="rounded-lg border border-sidebar-active bg-sidebar-hover p-4 text-sm text-sidebar-text-muted">
-              Nenhum chat ainda.
+  return (
+    <TooltipProvider delayDuration={300}>
+      <main className="flex h-dvh overflow-hidden bg-background text-foreground">
+        <AppSidebar
+          activeChatId={activeChat?.id}
+          chats={chats}
+          deletingChatId={deletingChatId}
+          isLoading={isBooting || sidebarStatus === "loading"}
+          isLoggingOut={isLoggingOut}
+          isOpen={isSidebarOpen}
+          onClose={() => setIsSidebarOpen(false)}
+          onCreateChat={() => void handleCreateChat()}
+          onDeleteChat={handleDeleteChat}
+          onLogout={() => void handleLogout()}
+          onSelectChat={(id) => void handleSelectChat(id)}
+          user={user}
+        />
+        <section className="flex min-w-0 flex-1 flex-col bg-background">
+          <ChatHeader
+            hasChat={Boolean(activeChat)}
+            isBusy={isSending || isUpdatingReranker}
+            onOpenSidebar={() => setIsSidebarOpen(true)}
+            onRerankerChange={(value) => void handleRerankerChange(value)}
+            onShare={() => void handleShareChat()}
+            reranker={activeChat?.visualReranker ?? "clip"}
+            shareLabel={shareLabel}
+            title={
+              !activeChat || activeChat.title === "Novo diagnostico"
+                ? "Nova consulta"
+                : activeChat.title
+            }
+          />
+          {applicationError && (
+            <div
+              className="mx-auto mt-3 flex w-[calc(100%-1.5rem)] max-w-3xl items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive"
+              role="alert"
+            >
+              <AlertCircle className="mt-0.5 size-4 shrink-0" />
+              <span className="flex-1 leading-5">{applicationError}</span>
+              <Button
+                aria-label="Fechar aviso"
+                className="-mr-1 -mt-1 size-7 text-destructive hover:bg-destructive/10"
+                onClick={() => setApplicationError("")}
+                size="icon"
+                variant="ghost"
+              >
+                <X />
+              </Button>
             </div>
           )}
-        </div>
-      </ScrollArea>
-
-      <div className="border-t border-sidebar-active p-4">
-        <div className="mb-3 flex items-center gap-3 rounded-lg bg-sidebar-hover p-3">
-          <div className="flex size-10 items-center justify-center rounded-lg border border-sidebar-active text-primary-foreground">
-            {initials}
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-primary-foreground">
-              {user?.name ?? "Usuario"}
-            </p>
-            <p className="truncate text-xs text-sidebar-text-muted">
-              {user?.email ?? "Sessao ativa"}
-            </p>
-          </div>
-        </div>
-        <Button
-          className="w-full"
-          disabled={isLoggingOut}
-          onClick={handleLogout}
-          variant="sidebar"
-        >
-          <LogOut />
-          {isLoggingOut ? "Saindo..." : "Sair"}
-        </Button>
-      </div>
-    </aside>
-  );
-
-  return (
-    <main className="flex h-screen overflow-hidden bg-background text-foreground">
-      {isSidebarOpen && (
-        <button
-          aria-label="Fechar menu"
-          className="fixed inset-0 z-20 bg-sidebar-bg/40 lg:hidden"
-          onClick={() => setIsSidebarOpen(false)}
-          type="button"
-        />
-      )}
-
-      {sidebar}
-
-      <section className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-16 items-center justify-between border-b border-border bg-navbar-bg px-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <Button
-              aria-label="Abrir menu"
-              className="lg:hidden"
-              onClick={() => setIsSidebarOpen(true)}
-              size="icon"
-              variant="ghost"
-            >
-              <Menu />
-            </Button>
-            <div className="min-w-0">
-              <h2 className="truncate text-base font-semibold">
-                {activeChat?.title ?? "Novo diagnostico"}
-              </h2>
-              <p className="truncate text-xs text-muted-foreground">
-                Respostas fundamentadas em manuais e diagramas recuperados
-              </p>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {activeChat && (
-              <label className="hidden items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground sm:flex">
-                <span>Reranker</span>
-                <select
-                  className="bg-transparent text-sm font-medium text-foreground outline-none"
-                  disabled={isSending || isUpdatingReranker}
-                  onChange={(event) =>
-                    handleRerankerChange(event.target.value as VisualReranker)
-                  }
-                  value={activeChat.visualReranker ?? "clip"}
-                >
-                  <option value="clip">CLIP</option>
-                  <option value="qwen">Qwen 2.5</option>
-                </select>
-              </label>
-            )}
-            <div className="hidden items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground md:flex">
-              <UserCircle className="size-4" />
-              {user?.name ?? "Usuario"}
-            </div>
-            {activeChat && (
-              <Button
-                className="hidden sm:inline-flex"
-                onClick={handleShareChat}
-                variant="outline"
-              >
-                <Share2 className="size-4" />
-                {shareLabel}
-              </Button>
-            )}
-          </div>
-        </header>
-
-        <ScrollArea className="flex-1">
-          <div className="mx-auto flex min-h-[calc(100vh-10rem)] w-full max-w-3xl flex-col px-4 py-8">
-            {!activeChat || activeMessages.length === 0 ? (
-              <div className="flex flex-1 items-center justify-center">
-                <div className="w-full max-w-2xl text-center">
-                  <div className="mx-auto mb-6 flex size-14 items-center justify-center rounded-lg border border-border bg-card">
-                    <Bot className="size-7" />
-                  </div>
-                  <h2 className="text-3xl font-semibold">
-                    Qual manual vamos consultar?
-                  </h2>
-                  <p className="mt-4 text-muted-foreground">
-                    Informe marca, modelo, ano e o procedimento ou sintoma. Se
-                    faltar contexto, o assistente vai perguntar antes de
-                    responder.
-                  </p>
-                  <div className="mt-8 grid gap-3 text-left sm:grid-cols-2">
-                    {suggestions.map((suggestion) => (
-                      <Card
-                        className="cursor-pointer p-4 text-sm transition hover:bg-muted"
-                        key={suggestion}
-                        onClick={() => setPrompt(suggestion)}
-                      >
-                        {suggestion}
-                      </Card>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-8">
-                {activeMessages.map((message, index) => {
-                  const isUser = message.sender === "USER";
-                  const isLastAssistant =
-                    !isUser && index === activeMessages.length - 1 && isSending;
-
-                  return (
-                    <article
-                      className={cn(
-                        "flex gap-4",
-                        isUser ? "justify-end" : "justify-start",
-                      )}
-                      key={message.id}
-                    >
-                      {!isUser && (
-                        <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-card">
-                          <Bot className="size-4" />
-                        </div>
-                      )}
-
-                      <div
-                        className={cn(
-                          "min-w-0 text-sm leading-6",
-                          isUser
-                            ? "max-w-[78%] rounded-lg bg-primary px-4 py-3 text-primary-foreground"
-                            : "max-w-full flex-1",
-                        )}
-                      >
-                        {message.content ? (
-                          <MarkdownText text={message.content} />
-                        ) : (
-                          <AssistantTyping />
-                        )}
-                        {!isUser && (
-                          <MessageSources
-                            isStreaming={isLastAssistant}
-                            message={message}
-                          />
-                        )}
-                        {isLastAssistant && message.content && (
-                          <div className="mt-2">
-                            <AssistantTyping />
-                          </div>
-                        )}
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </ScrollArea>
-
-        <div className="border-t border-border bg-background px-4 py-4">
-          <form
-            className="mx-auto flex max-w-3xl items-end gap-2 rounded-lg border border-border bg-card p-2"
-            onSubmit={handleSubmit}
+          <div
+            className="min-h-0 flex-1 overflow-y-auto"
+            role="log"
+            aria-live="polite"
           >
-            <Textarea
-              className="max-h-40 min-h-12 flex-1 border-0 bg-transparent py-3 focus-visible:ring-0"
-              disabled={isSending}
-              onChange={(event) => setPrompt(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
-              placeholder="Pergunte sobre um veículo, procedimento, fluido, aviso ou diagrama..."
-              ref={promptRef}
-              value={prompt}
-            />
-            {isSending ? (
-              <Button
-                aria-label="Cancelar resposta"
-                className="h-10 w-10 shrink-0"
-                onClick={handleCancelMessage}
-                size="icon"
-                type="button"
-                variant="outline"
-              >
-                <Square className="size-4 fill-current" />
-              </Button>
+            {isBooting || isChatLoading ? (
+              <ChatLoading />
+            ) : activeMessages.length === 0 ? (
+              <EmptyChat
+                onSelectSuggestion={(suggestion) => {
+                  setPrompt(suggestion);
+                  focusPromptInput();
+                }}
+              />
             ) : (
-              <Button
-                aria-label="Enviar mensagem"
-                className="h-10 w-10 shrink-0"
-                disabled={!prompt.trim()}
-                size="icon"
-                type="submit"
-              >
-                <Send />
-              </Button>
+              <ChatMessages
+                isSending={isSending}
+                messages={activeMessages}
+                requestStatus={requestStatus}
+              />
             )}
-          </form>
-        </div>
-      </section>
-    </main>
+            <div ref={messagesEndRef} />
+          </div>
+          <ChatComposer
+            disabled={isBooting || isChatLoading || isSending}
+            isSending={isSending}
+            onCancel={() => void handleCancelMessage()}
+            onChange={setPrompt}
+            onSubmit={handleSubmit}
+            prompt={prompt}
+            textareaRef={promptRef}
+          />
+        </section>
+      </main>
+    </TooltipProvider>
   );
 }

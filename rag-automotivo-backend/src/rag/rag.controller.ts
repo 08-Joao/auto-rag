@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
@@ -29,8 +29,13 @@ export class RagController {
       'rag_chunks_output',
       'images',
     );
+    const relativeToAllowedRoot = relative(allowedRoot, absolutePath);
 
-    if (!absolutePath.startsWith(allowedRoot) || !existsSync(absolutePath)) {
+    if (
+      relativeToAllowedRoot.startsWith('..') ||
+      isAbsolute(relativeToAllowedRoot) ||
+      !existsSync(absolutePath)
+    ) {
       throw new BadRequestException('Imagem nao encontrada.');
     }
 

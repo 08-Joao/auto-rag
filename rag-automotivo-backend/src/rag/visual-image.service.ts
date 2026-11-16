@@ -44,7 +44,13 @@ export class VisualImageService {
   private readonly clipModel =
     process.env.RAG_CLIP_MODEL ?? 'openai/clip-vit-base-patch32';
   private readonly threshold = Number(process.env.RAG_CLIP_THRESHOLD ?? 0.24);
-  private readonly maxImages = Number(process.env.RAG_CLIP_MAX_IMAGES ?? 5);
+  private readonly maxImages = Number(process.env.RAG_CLIP_MAX_IMAGES ?? 2);
+  private readonly prefilterLimit = Number(
+    process.env.RAG_CLIP_PREFILTER_LIMIT ?? 6,
+  );
+  private readonly candidateLimit = Number(
+    process.env.RAG_CLIP_CANDIDATE_LIMIT ?? 18,
+  );
 
   async analyzeImagesWithClip(
     question: string,
@@ -68,7 +74,7 @@ export class VisualImageService {
       '--threshold',
       String(this.threshold),
       '--max-images',
-      String(this.maxImages),
+      String(this.prefilterLimit),
     ];
 
     try {
@@ -85,8 +91,19 @@ export class VisualImageService {
       }
 
       const parsed = JSON.parse(stdout) as ClipImageResult[];
+      const topSourceId = sources[0]?.chunk_id;
+      const allowTopSourceTextOverride =
+        /limpador|lavador|washer|partida auxiliar|jump.start|cabo positivo|positive terminal/i.test(
+          question,
+        );
       return parsed
-        .filter((item) => item.score >= this.threshold)
+        .filter(
+          (item) =>
+            item.score >= this.threshold &&
+            ((item.negativeScore ?? 0) <=
+              (item.positiveScore ?? item.score) + 0.005 ||
+              (allowTopSourceTextOverride && item.chunkId === topSourceId)),
+        )
         .sort((left, right) => right.score - left.score)
         .slice(0, this.maxImages);
     } catch (error) {
@@ -279,7 +296,7 @@ export class VisualImageService {
       }
     }
 
-    return candidates;
+    return candidates.slice(0, this.candidateLimit);
   }
 
   private buildRerankCandidates(
@@ -360,6 +377,11 @@ export class VisualImageService {
     const lowerPath = input.imagePath.toLowerCase();
     const text = input.ocrText;
     const component = this.normalizeText(input.component ?? '');
+    const isOilComponent = component.includes('oleo');
+    const isFuelComponent =
+      component.includes('combustivel') ||
+      component.includes('tanque') ||
+      component.includes('portinhola');
 
     if (!this.isReadableImage(input.imagePath)) {
       return {
@@ -402,8 +424,18 @@ export class VisualImageService {
     }
 
     if (
-      component.includes('tampa') &&
-      component.includes('oleo') &&
+      typeof input.negativeScore === 'number' &&
+      typeof input.positiveScore === 'number' &&
+      input.negativeScore > input.positiveScore + 0.005
+    ) {
+      return {
+        isRelevant: false,
+        rejectionReason: `CLIP associou mais a imagem ao distrator "${input.negativeLabel || 'outro componente'}" do que ao alvo perguntado.`,
+      };
+    }
+
+    if (
+      isOilComponent &&
       this.isHoodOpeningVisual(input.negativeLabel ?? '', text) &&
       (input.negativeScore ?? 0) >
         (input.positiveScore ?? input.clipScore) + 0.015
@@ -415,11 +447,21 @@ export class VisualImageService {
       };
     }
 
-    if (input.textScore < 0.42) {
+    const hasStrongVisualContrast =
+      (input.positiveScore ?? input.clipScore) >= this.threshold &&
+      (input.positiveScore ?? input.clipScore) -
+        (input.negativeScore ?? 0) >=
+        0.005;
+    const minimumTextScore = hasStrongVisualContrast
+      ? 0.1
+      : isFuelComponent
+        ? 0.3
+        : 0.42;
+    if (input.textScore < minimumTextScore) {
       return {
         isRelevant: false,
         rejectionReason:
-          'Sem OCR, legenda ou contexto textual suficiente relacionado a tampa/bocal de oleo.',
+          'Sem legenda, OCR ou contexto textual suficiente para a pergunta.',
       };
     }
 
@@ -430,8 +472,17 @@ export class VisualImageService {
       /(engine compartment|compartimento do motor|motor|filler cap|oil filler|tampa|bocal)/i.test(
         text,
       );
+    const hasFuelContext =
+      /(fuel tank flap|fuel flap|tank cap|fuel filler|refuelling|refueling|portinhola|tanque|combustivel)/i.test(
+        text,
+      );
+    const hasRequiredContext = isFuelComponent
+      ? hasFuelContext
+      : isOilComponent
+        ? hasEngineContext
+        : true;
 
-    if (!hasComponentEvidence || !hasEngineContext) {
+    if (!hasComponentEvidence || !hasRequiredContext) {
       return {
         isRelevant: false,
         rejectionReason:
@@ -539,7 +590,7 @@ export class VisualImageService {
       }
     };
 
-    if (/tampa|oleo|óleo|oil|filler/.test(text)) {
+    if (/oleo|óleo|engine oil|oil filler/.test(text)) {
       addTerms([
         'tampa de oleo',
         'tampa do oleo',
@@ -552,6 +603,23 @@ export class VisualImageService {
         'oleo do motor',
         'compartimento do motor',
         'engine compartment',
+      ]);
+    }
+
+    if (/combustivel|gasolina|tanque|portinhola|fuel|refuell/.test(text)) {
+      addTerms([
+        'portinhola do tanque',
+        'portinhola do tanque de combustivel',
+        'tampa do tanque',
+        'fuel tank flap',
+        'fuel flap',
+        'fuel filler door',
+        'fuel filler door emergency release',
+        'emergency release',
+        'tank cap',
+        'fuel filler cap',
+        'refuelling',
+        'refueling',
       ]);
     }
 
@@ -605,6 +673,48 @@ export class VisualImageService {
       ]);
     }
 
+    if (/capo|capô|hood|bonnet/.test(text)) {
+      addTerms([
+        'opening the hood',
+        'hood release',
+        'release handle',
+        'hood latch',
+        'alavanca do capo',
+        'trava do capo',
+      ]);
+    }
+
+    if (/pneu|estepe|tire|tyre|b-pillar|coluna b/.test(text)) {
+      addTerms([
+        'tire pressure label',
+        'spare wheel',
+        'driver side b pillar',
+        'cold tire inflation pressure',
+        'etiqueta de pressao',
+        'coluna b',
+      ]);
+    }
+
+    if (/limpador|lavador|para-brisa|washer|windscreen|windshield/.test(text)) {
+      addTerms([
+        'washer fluid reservoir cap',
+        'windshield washer system',
+        'headlight washer system',
+        'tampa do reservatorio do limpador',
+        'simbolo do lavador',
+      ]);
+    }
+
+    if (/partida auxiliar|jump start|cabo positivo|positive terminal/.test(text)) {
+      addTerms([
+        'jump-starting connection',
+        'positive terminal',
+        'cap marked with plus',
+        'terminal positivo',
+        'partida auxiliar',
+      ]);
+    }
+
     for (const token of text.split(/\s+/)) {
       if (
         [
@@ -614,6 +724,11 @@ export class VisualImageService {
           'oil',
           'filler',
           'cap',
+          'combustivel',
+          'gasolina',
+          'tanque',
+          'portinhola',
+          'fuel',
           'motor',
           'reservatorio',
           'reservatório',
@@ -625,6 +740,14 @@ export class VisualImageService {
           'bateria',
           'painel',
           'dashboard',
+          'capo',
+          'hood',
+          'pneu',
+          'tire',
+          'estepe',
+          'washer',
+          'limpador',
+          'terminal',
         ].includes(token)
       ) {
         terms.add(token);

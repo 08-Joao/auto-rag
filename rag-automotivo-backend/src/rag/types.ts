@@ -29,6 +29,7 @@ export type RagSource = {
     reranker?: number;
     metadata?: number;
     rrf?: number;
+    structural_neighbor?: number;
     final?: number;
   };
   clip_results?: ClipImageResult[];
@@ -153,6 +154,21 @@ export type ImageRerankResult = {
   candidates: ImageRerankCandidate[];
 };
 
+export type RagMultimodalDiagnostics = {
+  requestedReranker: VisualReranker;
+  effectiveReranker: VisualReranker;
+  durationMs: number;
+  rawCandidateCount: number;
+  evaluatedCandidateCount: number;
+  selectedImageCount: number;
+  rejectedImageCount: number;
+  selectedImages: Array<{
+    imagePath: string;
+    page?: number;
+    score: number;
+  }>;
+};
+
 export type RagAnswer = {
   answer: string;
   sources: RagSource[];
@@ -173,6 +189,7 @@ export type RagAnswer = {
   resolvedQuery?: string;
   isFollowUp?: boolean;
   visualReranker?: VisualReranker;
+  multimodalDiagnostics?: RagMultimodalDiagnostics;
   chunkEvaluations?: RetrievedChunkEvaluation[];
   retrievalStatus?: RetrievalStatus;
 };
@@ -270,6 +287,7 @@ export type RagStreamEvent =
       resolvedQuery?: string;
       isFollowUp?: boolean;
       visualReranker?: VisualReranker;
+      multimodalDiagnostics?: RagMultimodalDiagnostics;
     }
   | {
       type: 'error';

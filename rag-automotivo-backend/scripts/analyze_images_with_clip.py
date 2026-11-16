@@ -84,7 +84,7 @@ def enrich_question(question: str) -> str:
     normalized = question.lower()
     hints: list[str] = []
 
-    if any(term in normalized for term in ["óleo", "oleo", "oil", "tampa"]):
+    if any(term in normalized for term in ["óleo", "oleo", "engine oil", "oil filler"]):
         hints.append("engine oil filler cap location in engine compartment")
     if any(term in normalized for term in ["fusível", "fusivel", "fuse"]):
         hints.append("vehicle fuse box location diagram")
@@ -108,7 +108,7 @@ def build_prompt_sets(question: str) -> tuple[list[str], list[str]]:
     positive = [enrich_question(question)]
     negative: list[str] = []
 
-    if any(term in normalized for term in ["óleo", "oleo", "oil", "tampa"]):
+    if any(term in normalized for term in ["óleo", "oleo", "engine oil", "oil filler"]):
         positive = [
             "numbered engine bay diagram with fluid containers",
             "engine compartment diagram showing the engine oil filler cap",
@@ -124,6 +124,82 @@ def build_prompt_sets(question: str) -> tuple[list[str], list[str]]:
                 "car exterior front bumper with hood release detail",
             ],
         )
+
+    if any(term in normalized for term in ["capô", "capo", "hood", "bonnet"]):
+        positive = [
+            "driver footwell hood release lever",
+            "front hood release handle and latch diagram",
+            "two step instructions for opening a car hood",
+        ]
+        negative = [
+            "generic engine compartment",
+            "oil filler cap",
+            "owner manual cover page",
+        ]
+
+    if any(term in normalized for term in ["portinhola", "fuel filler", "fuel door", "tanque de combustível", "tanque de combustivel"]):
+        emergency = any(term in normalized for term in ["manual", "emergência", "emergencia", "falha", "falhar", "travamento central"])
+        if emergency:
+            positive = [
+                "fuel filler door emergency release loop behind the right luggage compartment light cover",
+                "manual emergency fuel door release cable in trunk diagram",
+                "screwdriver removing right rear light cover and pulling emergency loop",
+            ]
+            negative = [
+                "ordinary fuel refilling instructions",
+                "fuel pump nozzle and fuel cap",
+                "AdBlue DEF refill instructions",
+                "owner manual cover page",
+            ]
+        else:
+            positive = [
+                "fuel filler door opening and fuel cap diagram",
+                "pressing the left side of a car fuel flap",
+                "car refueling flap instructions",
+            ]
+            negative = [
+                "AdBlue DEF refill instructions",
+                "engine oil filler cap",
+                "owner manual cover page",
+            ]
+
+    if any(term in normalized for term in ["limpador", "lavador", "washer", "windshield", "windscreen"]):
+        positive = [
+            "windshield washer fluid reservoir cap symbol in engine compartment",
+            "washer reservoir cap with windshield spray icon",
+            "close-up diagram of a washer reservoir cap marked with a windshield spray symbol",
+        ]
+        negative = [
+            "generic engine compartment overview with numbered components",
+            "coolant reservoir",
+            "brake fluid reservoir",
+            "engine oil filler cap",
+            "owner manual cover page",
+        ]
+
+    if any(term in normalized for term in ["partida auxiliar", "jump start", "jump-start", "cabo positivo", "positive terminal"]):
+        positive = [
+            "close-up diagram of a jump-start positive terminal under a cap marked with plus",
+            "lifting the plus marked cover of a car jump starting connection",
+            "positive jumper cable connection point in engine compartment",
+        ]
+        negative = [
+            "generic engine compartment overview with numbered components",
+            "car battery without a marked jump-start terminal",
+            "owner manual cover page",
+        ]
+
+    if any(term in normalized for term in ["estepe", "spare wheel", "spare tire", "b-pillar", "coluna b"]):
+        positive = [
+            "tire pressure label on driver side B pillar",
+            "door pillar tire inflation pressure sticker location",
+            "spare wheel pressure label diagram",
+        ]
+        negative = [
+            "generic wheel and tire photograph",
+            "tire tread diagram",
+            "owner manual cover page",
+        ]
 
     if any(term in normalized for term in ["reservatório", "reservatorio", "fluido"]):
         positive = [

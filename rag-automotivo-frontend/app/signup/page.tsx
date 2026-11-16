@@ -52,14 +52,14 @@ export default function SignUpPage() {
       nextErrors.name = "Informe seu nome completo.";
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      nextErrors.email = "Informe um e-mail valido.";
+      nextErrors.email = "Informe um e-mail válido.";
     }
     if (!strongPasswordPattern.test(password)) {
       nextErrors.password =
-        "Use 8+ caracteres com maiuscula, minuscula, numero e simbolo.";
+        "Use 8+ caracteres com maiúscula, minúscula, número e símbolo.";
     }
     if (password !== confirmPassword) {
-      nextErrors.confirmPassword = "A confirmacao precisa ser igual a senha.";
+      nextErrors.confirmPassword = "A confirmação precisa ser igual à senha.";
     }
 
     setErrors(nextErrors);
@@ -77,7 +77,7 @@ export default function SignUpPage() {
       setApiError(
         error instanceof ApiError
           ? error.message
-          : "Nao foi possivel criar a conta. Tente novamente.",
+          : "Não foi possível criar a conta. Tente novamente.",
       );
     } finally {
       setIsLoading(false);
@@ -86,11 +86,11 @@ export default function SignUpPage() {
 
   return (
     <AuthShell
-      eyebrow="Onboarding seguro"
-      highlights={["Auditoria", "Cookies httpOnly", "Refresh seguro"]}
+      eyebrow="Crie seu acesso"
+      highlights={["Histórico", "Fontes", "Imagens"]}
       side="right"
-      subtitle="Sua equipe com respostas tecnicas mais rapidas."
-      title="Criar conta"
+      subtitle="Salve suas conversas e consulte respostas fundamentadas nos manuais disponíveis."
+      title="Criar uma conta"
     >
       <form className="space-y-5" onSubmit={handleSubmit}>
         <div className="space-y-2">
@@ -143,23 +143,23 @@ export default function SignUpPage() {
         />
 
         {apiError && (
-          <div className="rounded-lg border border-destructive bg-card px-4 py-3 text-sm text-destructive">
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
             {apiError}
           </div>
         )}
         {success && (
-          <div className="rounded-lg border border-success bg-card px-4 py-3 text-sm text-success">
+          <div className="rounded-md border border-success/30 bg-success/5 px-3 py-2.5 text-sm text-success">
             {success}
           </div>
         )}
 
-        <Button className="h-12 w-full" disabled={!isValid || isLoading}>
-          {isLoading ? "Criando acesso..." : "Criar conta"}
+        <Button className="w-full" disabled={!isValid || isLoading}>
+          {isLoading ? "Criando acesso…" : "Criar conta"}
         </Button>
       </form>
 
       <p className="mt-6 text-center text-sm text-muted-foreground">
-        Ja tem uma conta?{" "}
+        Já tem uma conta?{" "}
         <Link className="font-semibold text-foreground" href="/signin">
           Entrar
         </Link>

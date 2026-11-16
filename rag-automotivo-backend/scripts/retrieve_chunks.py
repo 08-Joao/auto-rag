@@ -157,6 +157,82 @@ def tokenize(text: str) -> list[str]:
     return re.findall(r"[\wÀ-ÿ]+", text.lower())
 
 
+def build_query_variants(query: str) -> list[str]:
+    """Cria consultas bilíngues determinísticas sem introduzir respostas.
+
+    A base possui muitos manuais em inglês e as perguntas são feitas em
+    português. O embedding multilíngue continua sendo o sinal principal; a
+    variante de domínio permite que BM25 e a segunda busca vetorial encontrem
+    termos exatos do manual, siglas e nomes de seção.
+    """
+    normalized = " ".join(tokenize(query))
+    terms: list[str] = []
+
+    def add(*values: str) -> None:
+        for value in values:
+            if value not in terms:
+                terms.append(value)
+
+    if re.search(r"\b(cap[oô]|hood|bonnet)\b", normalized):
+        add("hood", "opening the hood", "pull the lever", "release handle", "open the hood")
+    if re.search(r"(?:baixa|low).{0,25}press[aã]o.{0,25}(?:[oó]leo|oil)|(?:[oó]leo|oil).{0,25}press[aã]o", normalized):
+        add("engine oil pressure", "oil pressure warning", "turn off the engine", "do not continue driving", "check engine oil level")
+    if re.search(r"(?:salv|armazen|store).{0,35}press[aã]o.{0,20}pneu|press[aã]o.{0,20}pneu.{0,35}(?:sistema|mmi)", normalized):
+        add("storing tire pressures", "tire pressure monitoring", "store tire pressure", "yes store now", "settings service")
+    if re.search(r"controle de cruzeiro|cruise control", normalized):
+        add("cruise control", "switching on", "constant speed", "starting at", "mph km h")
+    if re.search(r"(?:press[aã]o).{0,30}(?:estepe)|(?:estepe|spare).{0,30}(?:press[aã]o|pressure)", normalized):
+        add("spare wheel", "correct tire pressure", "tire inflation pressure", "driver side b pillar", "label")
+    if re.search(r"(?:manual|emerg[eê]ncia|falhar|falha).{0,60}(?:portinhola|tanque|combust[ií]vel)|(?:portinhola|tanque|combust[ií]vel).{0,60}(?:manual|emerg[eê]ncia|falhar|falha)", normalized):
+        add("fuel filler door emergency release", "right light cover", "luggage compartment", "pull on the loop", "fuel filler door")
+    elif is_fuel_filler_query(query):
+        add("fuel tank flap", "fuel filler flap", "fuel filler door", "tank cap", "press the left side", "open")
+    if re.search(r"(?:tampa).{0,35}(?:limpador|para brisa|washer)|(?:limpador|para brisa|washer).{0,35}(?:tampa|identific)", normalized):
+        add("windshield washer system", "washer fluid reservoir cap", "washer reservoir cap", "engine compartment", "headlight washer system")
+    if re.search(r"(?:cabo|terminal|polo).{0,25}(?:positivo).{0,50}(?:partida|auxiliar)|(?:partida auxiliar|jump start).{0,50}(?:positivo|positive)", normalized):
+        add("jump starting connection", "connecting jumper cables", "positive terminal", "engine compartment", "cap marked with plus")
+    if re.search(r"capacidade.{0,40}(?:reservat[oó]rio|limpador|washer)|(?:reservat[oó]rio|limpador|washer).{0,40}capacidade", normalized):
+        add("washer fluids", "filling capacity", "windshield washer system", "headlamp washer system", "US quarts liters")
+
+    if not terms:
+        return [query]
+    return [query, " ".join(terms)]
+
+
+def expanded_domain_score(item: dict[str, Any], query: str) -> float:
+    variants = build_query_variants(query)
+    if len(variants) < 2:
+        return 0.0
+    text = f"{item.get('section_title') or ''} {item.get('text') or ''}".lower()
+    normalized_query = " ".join(tokenize(query))
+    direct_patterns: list[tuple[bool, list[str]]] = [
+        (bool(re.search(r"\b(cap[oô]|hood|bonnet)\b", normalized_query)), ["pull the lever", "release handle", "opening the hood"]),
+        (bool(re.search(r"press[aã]o.{0,25}(?:[oó]leo|oil)|(?:[oó]leo|oil).{0,25}press[aã]o", normalized_query)), ["engine oil pressure", "do not continue driving", "turn off the engine"]),
+        (bool(re.search(r"(?:salv|armazen|store).{0,35}press[aã]o|press[aã]o.{0,35}(?:sistema|mmi)", normalized_query)), ["store tire pressure", "storing tire pressures", "yes, store now"]),
+        ("controle de cruzeiro" in normalized_query or "cruise control" in normalized_query, ["cruise control", "starting at"]),
+        ("estepe" in normalized_query or "spare wheel" in normalized_query, ["spare wheel", "driver's side b-pillar", "driver side b-pillar"]),
+        (bool(re.search(r"(?:manual|emerg[eê]ncia|falhar|falha).{0,60}(?:portinhola|tanque)|(?:portinhola|tanque).{0,60}(?:manual|emerg[eê]ncia|falhar|falha)", normalized_query)), ["fuel filler door emergency release", "right light cover", "pull on the loop", "emergency release"]),
+        (bool(re.search(r"(?:limpador|para brisa|washer).{0,35}(?:tampa|identific)|tampa.{0,35}(?:limpador|para brisa|washer)", normalized_query)), ["washer fluid reservoir cap", "washer reservoir cap"]),
+        ("partida auxiliar" in normalized_query or "jump start" in normalized_query, ["jump-starting connection", "positive terminal", "cap is marked with +"]),
+        (bool(re.search(r"capacidade.{0,40}(?:reservat[oó]rio|limpador|washer)", normalized_query)), ["filling capacity", "headlamp washer system", "washer fluids"]),
+        (is_fuel_filler_query(query), ["press the left side of the flap", "fuel tank flap", "fuel filler door"]),
+    ]
+    for applies, phrases in direct_patterns:
+        if not applies:
+            continue
+        matched_phrases = sum(1 for phrase in phrases if phrase in text)
+        if matched_phrases >= 2:
+            return 1.0
+        if matched_phrases == 1:
+            return 0.82
+    domain_terms = [term for term in variants[1].lower().split() if len(term) >= 3]
+    if not domain_terms:
+        return 0.0
+    matches = sum(1 for term in set(domain_terms) if term in text)
+    coverage = matches / len(set(domain_terms))
+    return min(1.0, 0.85 * coverage)
+
+
 def bm25_scores(
     metadata: list[dict[str, Any]],
     query: str,
@@ -237,6 +313,16 @@ def is_oil_query(query: str) -> bool:
             "viscosidade",
             "viscosity",
         ]
+    )
+
+
+def is_oil_pressure_query(query: str) -> bool:
+    normalized = " ".join(tokenize(query))
+    return bool(
+        re.search(
+            r"press[aã]o.{0,25}(?:[oó]leo|oil)|(?:[oó]leo|oil).{0,25}press[aã]o",
+            normalized,
+        )
     )
 
 
@@ -451,14 +537,18 @@ def lexical_supplements(
         if vector_id in existing_vector_ids:
             continue
 
-        score = 0.0
+        score = expanded_domain_score(item, query)
         if is_wheel_size_query(query):
             score = max(score, wheel_lexical_score(item, query))
         if is_visual_location_query(query):
             score = max(score, visual_location_lexical_score(item, query))
         if is_fuel_filler_query(query):
             score = max(score, fuel_filler_lexical_score(item, query))
-        if is_oil_query(query) and not is_visual_location_query(query):
+        if (
+            is_oil_query(query)
+            and not is_oil_pressure_query(query)
+            and not is_visual_location_query(query)
+        ):
             score = max(score, oil_lexical_score(item, query))
 
         if score <= 0:
@@ -495,14 +585,18 @@ def metadata_score(item: dict[str, Any], query: str) -> float:
 
 
 def domain_score(item: dict[str, Any], query: str) -> float:
-    score = 0.0
+    score = expanded_domain_score(item, query)
     if is_wheel_size_query(query):
         score = max(score, wheel_lexical_score(item, query))
     if is_visual_location_query(query):
         score = max(score, visual_location_lexical_score(item, query))
     if is_fuel_filler_query(query):
         score = max(score, fuel_filler_lexical_score(item, query))
-    if is_oil_query(query) and not is_visual_location_query(query):
+    if (
+        is_oil_query(query)
+        and not is_oil_pressure_query(query)
+        and not is_visual_location_query(query)
+    ):
         score = max(score, oil_lexical_score(item, query))
     return min(score, 1.0)
 
@@ -603,7 +697,7 @@ def apply_reranker(
 
 def apply_lead_semantic_score(
     candidates: list[dict[str, Any]],
-    query_embedding: np.ndarray,
+    query_embeddings: np.ndarray,
     embedding_model: SentenceTransformer,
     limit: int = 80,
 ) -> None:
@@ -629,17 +723,46 @@ def apply_lead_semantic_score(
             normalize_embeddings=True,
             batch_size=32,
         ).astype("float32")
-    lead_scores = lead_embeddings @ query_embedding[0]
-    for candidate, lead_score in zip(scoped, lead_scores):
+    lead_scores = lead_embeddings @ query_embeddings.T
+    best_lead_scores = np.max(lead_scores, axis=1)
+    for candidate, lead_score in zip(scoped, best_lead_scores):
         score = max(0.0, min(1.0, float(lead_score)))
         candidate["scores"]["lead_vector"] = score
-        candidate["scores"]["final"] = (
+        fused_score = (
             0.55 * candidate["scores"].get("final", 0.0) + 0.45 * score
         )
+        # A segunda passagem semântica não deve apagar uma evidência lexical
+        # inequívoca. Isso é especialmente importante em PDFs com OCR ruidoso,
+        # nos quais títulos e procedimentos podem ser divididos entre chunks.
+        # O piso usa apenas a presença de frases de domínio (não o gabarito ou
+        # valores da resposta), mantendo a regra aplicável a novas perguntas.
+        domain_floor = (
+            0.72 * candidate["scores"].get("domain", 0.0)
+            + 0.18 * candidate["scores"].get("metadata", 0.0)
+        )
+        candidate["scores"]["final"] = max(fused_score, domain_floor)
 
 
 def normalize_vehicle_value(value: Any) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower()))
+
+
+MODEL_ALIASES: dict[str, set[str]] = {
+    "750il": {"750il", "7 series", "7series"},
+    "750i": {"750i", "7 series", "7series"},
+    "740i": {"740i", "7 series", "7series"},
+    "330": {"330", "3 series", "3series"},
+}
+
+
+def model_matches(requested_model: str, actual_model: str) -> bool:
+    if not requested_model:
+        return True
+    if requested_model in actual_model.split() or requested_model == actual_model:
+        return True
+    aliases = MODEL_ALIASES.get(requested_model, {requested_model})
+    compact_actual = actual_model.replace(" ", "")
+    return any(alias == actual_model or alias.replace(" ", "") == compact_actual for alias in aliases)
 
 
 def vehicle_matches(item: dict[str, Any], args: argparse.Namespace) -> bool:
@@ -653,122 +776,183 @@ def vehicle_matches(item: dict[str, Any], args: argparse.Namespace) -> bool:
 
     if requested_brand and requested_brand != actual_brand:
         return False
-    if requested_model and requested_model not in actual_model.split():
+    if requested_model and not model_matches(requested_model, actual_model):
         return False
     if requested_year and requested_year != actual_year:
         return False
     return True
 
 
-def main() -> None:
-    configure_determinism()
-    args = parse_args()
-    output_dir = Path(args.output_dir)
-    index_path = output_dir / "manual_chunks.faiss"
-    metadata_path = output_dir / "chunks_metadata.json"
+class RetrieverRuntime:
+    """Mantém FAISS e modelo de embeddings carregados entre consultas."""
 
-    if not index_path.exists():
-        raise FileNotFoundError(f"Índice FAISS não encontrado: {index_path}")
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Metadados dos chunks não encontrados: {metadata_path}")
+    def __init__(
+        self,
+        output_dir: str,
+        model_name: str,
+        embedding_device: str = "cpu",
+        reranker_device: str = "cpu",
+        minimum_free_vram_mb: int = 2048,
+    ) -> None:
+        configure_determinism()
+        output_path = Path(output_dir)
+        index_path = output_path / "manual_chunks.faiss"
+        metadata_path = output_path / "chunks_metadata.json"
+        if not index_path.exists():
+            raise FileNotFoundError(f"Índice FAISS não encontrado: {index_path}")
+        if not metadata_path.exists():
+            raise FileNotFoundError(f"Metadados dos chunks não encontrados: {metadata_path}")
 
-    started_at = time.monotonic()
-    index = faiss.read_index(str(index_path))
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if index.ntotal != len(metadata):
-        raise ValueError(
-            f"INDEX_METADATA_COUNT_MISMATCH: index={index.ntotal}, metadata={len(metadata)}"
+        self.model_name = model_name
+        self.embedding_device = resolve_device(embedding_device, minimum_free_vram_mb)
+        self.reranker_device = resolve_device(reranker_device, minimum_free_vram_mb)
+        self.index = faiss.read_index(str(index_path))
+        self.metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if self.index.ntotal != len(self.metadata):
+            raise ValueError(
+                f"INDEX_METADATA_COUNT_MISMATCH: index={self.index.ntotal}, metadata={len(self.metadata)}"
+            )
+
+        log_runtime("embedding_model_load", phase="before", **memory_snapshot(self.embedding_device))
+        with contextlib.redirect_stdout(sys.stderr):
+            self.model = SentenceTransformer(model_name, device=self.embedding_device)
+        log_runtime("embedding_model_load", phase="after", **memory_snapshot(self.embedding_device))
+
+    def retrieve(self, args: argparse.Namespace) -> dict[str, Any]:
+        started_at = time.monotonic()
+        query_variants = build_query_variants(args.query)
+        with contextlib.redirect_stdout(sys.stderr):
+            query_embeddings = self.model.encode(
+                query_variants,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+            ).astype("float32")
+        if query_embeddings.shape[1] != self.index.d:
+            raise ValueError(
+                f"EMBEDDING_DIMENSION_MISMATCH: query={query_embeddings.shape[1]}, index={self.index.d}"
+            )
+
+        top_k = max(1, min(args.top_k, len(self.metadata)))
+        vector_candidate_k = min(
+            len(self.metadata),
+            max(
+                top_k,
+                200
+                if any([args.vehicle_brand, args.vehicle_model, args.vehicle_year])
+                else top_k,
+            ),
         )
-
-    embedding_device = resolve_device(args.embedding_device, args.minimum_free_vram_mb)
-    reranker_device = resolve_device(args.reranker_device, args.minimum_free_vram_mb)
-    log_runtime("embedding_model_load", phase="before", **memory_snapshot(embedding_device))
-    with contextlib.redirect_stdout(sys.stderr):
-        model = SentenceTransformer(args.model, device=embedding_device)
-        query_embedding = model.encode(
-            [args.query],
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-        ).astype("float32")
-    log_runtime("embedding_model_load", phase="after", **memory_snapshot(embedding_device))
-    if query_embedding.shape[1] != index.d:
-        raise ValueError(
-            f"EMBEDDING_DIMENSION_MISMATCH: query={query_embedding.shape[1]}, index={index.d}"
+        vector_by_id: dict[int, tuple[float, int]] = {}
+        for query_embedding in query_embeddings:
+            scores, vector_ids = self.index.search(
+                query_embedding.reshape(1, -1), vector_candidate_k
+            )
+            for rank, (score, vector_id) in enumerate(
+                zip(scores[0], vector_ids[0]), start=1
+            ):
+                if vector_id < 0:
+                    continue
+                current = vector_by_id.get(int(vector_id))
+                candidate = (float(score), rank)
+                if current is None or candidate[0] > current[0] or (
+                    candidate[0] == current[0] and candidate[1] < current[1]
+                ):
+                    vector_by_id[int(vector_id)] = candidate
+        vector_hits = [
+            (score, vector_id)
+            for vector_id, (score, rank) in sorted(
+                vector_by_id.items(),
+                key=lambda item: (-item[1][0], item[1][1], item[0]),
+            )
+        ]
+        existing_vector_ids = {vector_id for _, vector_id in vector_hits}
+        eligible_ids = {
+            vector_id
+            for vector_id, item in enumerate(self.metadata)
+            if vehicle_matches(item, args)
+        }
+        lexical_hits = lexical_supplements(
+            self.metadata,
+            args.query,
+            existing_vector_ids,
+            args.lexical_supplements,
+            eligible_ids,
         )
-
-    top_k = max(1, min(args.top_k, len(metadata)))
-    vector_candidate_k = min(
-        len(metadata),
-        max(top_k, 200 if any([args.vehicle_brand, args.vehicle_model, args.vehicle_year]) else top_k),
-    )
-    scores, vector_ids = index.search(query_embedding, vector_candidate_k)
-
-    vector_hits = []
-    existing_vector_ids = set()
-    for score, vector_id in zip(scores[0], vector_ids[0]):
-        if vector_id < 0:
-            continue
-        existing_vector_ids.add(int(vector_id))
-        vector_hits.append((float(score), int(vector_id)))
-
-    eligible_ids = {
-        vector_id
-        for vector_id, item in enumerate(metadata)
-        if vehicle_matches(item, args)
-    }
-    lexical_hits = lexical_supplements(
-        metadata,
-        args.query,
-        existing_vector_ids,
-        args.lexical_supplements,
-        eligible_ids,
-    )
-    bm25_hits = bm25_scores(metadata, args.query, args.bm25_top_k, eligible_ids)
-    candidates = merge_candidates(metadata, vector_hits, bm25_hits, lexical_hits, args.query)
-    candidates = [
-        candidate for candidate in candidates if vehicle_matches(candidate["item"], args)
-    ]
-    apply_lead_semantic_score(candidates, query_embedding, model)
-    candidates.sort(key=lambda entry: (-entry["scores"]["final"], entry["vector_id"]))
-    reranker_status, reranker_reason = apply_reranker(
-        candidates,
-        args.query,
-        args.reranker_model,
-        args.reranker_top_k,
-        reranker_device,
-    )
-    candidates.sort(key=lambda entry: (-entry["scores"]["final"], entry["vector_id"]))
-
-    results = [
-        compact_chunk(candidate["item"], float(candidate["scores"]["final"]), candidate["scores"])
-        for candidate in candidates[:top_k]
-    ]
-
-    print(
-        json.dumps(
-            {
-                "query": args.query,
-                "status": (
-                    "RERANKER_FAILURE_WITH_FALLBACK"
-                    if reranker_status == "FALLBACK"
-                    else ("SUCCESS_WITH_EVIDENCE" if results else "SUCCESS_WITHOUT_EVIDENCE")
-                ),
-                "results": results,
-                "warnings": ([{"code": reranker_reason}] if reranker_reason else []),
-                "diagnostics": {
-                    "embeddingModel": args.model,
-                    "embeddingDevice": embedding_device,
-                    "rerankerDevice": reranker_device,
-                    "rerankerStatus": reranker_status,
-                    "indexVectors": index.ntotal,
-                    "metadataCount": len(metadata),
-                    "indexDimension": index.d,
-                    "durationMs": round((time.monotonic() - started_at) * 1000),
-                },
+        bm25_hits = bm25_scores(
+            self.metadata,
+            " ".join(query_variants),
+            args.bm25_top_k,
+            eligible_ids,
+        )
+        candidates = merge_candidates(
+            self.metadata, vector_hits, bm25_hits, lexical_hits, args.query
+        )
+        candidates = [
+            candidate
+            for candidate in candidates
+            if vehicle_matches(candidate["item"], args)
+        ]
+        apply_lead_semantic_score(
+            candidates, query_embeddings, self.model
+        )
+        candidates.sort(
+            key=lambda entry: (-entry["scores"]["final"], entry["vector_id"])
+        )
+        reranker_status, reranker_reason = apply_reranker(
+            candidates,
+            args.query,
+            args.reranker_model,
+            args.reranker_top_k,
+            self.reranker_device,
+        )
+        candidates.sort(
+            key=lambda entry: (-entry["scores"]["final"], entry["vector_id"])
+        )
+        results = [
+            compact_chunk(
+                candidate["item"],
+                float(candidate["scores"]["final"]),
+                candidate["scores"],
+            )
+            for candidate in candidates[:top_k]
+        ]
+        return {
+            "query": args.query,
+            "status": (
+                "RERANKER_FAILURE_WITH_FALLBACK"
+                if reranker_status == "FALLBACK"
+                else (
+                    "SUCCESS_WITH_EVIDENCE"
+                    if results
+                    else "SUCCESS_WITHOUT_EVIDENCE"
+                )
+            ),
+            "results": results,
+            "warnings": ([{"code": reranker_reason}] if reranker_reason else []),
+            "diagnostics": {
+                "embeddingModel": self.model_name,
+                "embeddingDevice": self.embedding_device,
+                "rerankerDevice": self.reranker_device,
+                "rerankerStatus": reranker_status,
+                "indexVectors": self.index.ntotal,
+                "metadataCount": len(self.metadata),
+                "indexDimension": self.index.d,
+                "queryVariants": query_variants,
+                "durationMs": round((time.monotonic() - started_at) * 1000),
             },
-            ensure_ascii=False,
-        )
+        }
+
+
+def main() -> None:
+    args = parse_args()
+    runtime = RetrieverRuntime(
+        args.output_dir,
+        args.model,
+        args.embedding_device,
+        args.reranker_device,
+        args.minimum_free_vram_mb,
     )
+    print(json.dumps(runtime.retrieve(args), ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ dist/
 build/
 .next/
 out/
+tmp/
 coverage/
 
 # Python
@@ -29,8 +30,10 @@ __pycache__/
 !.env.example
 !.env.sample
 
-# Generated RAG data and heavy local documents
-documents/
+# Generated RAG data and downloaded manual corpus
+documents/*
+!documents/README.md
+!documents/checksums.sha256
 rag_chunks_output/
 vectorstores/
 *.faiss
@@ -53,6 +56,9 @@ vectorstores/
 *.log
 logs/
 .cache/
+
+# Private blind-evaluation key (researcher only)
+experiments/gabarito-privado.json
 
 # OS/editor files
 .DS_Store

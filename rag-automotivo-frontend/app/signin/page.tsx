@@ -38,7 +38,7 @@ export default function SignInPage() {
 
     const nextErrors: FieldErrors = {};
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      nextErrors.email = "Informe um e-mail valido.";
+      nextErrors.email = "Informe um e-mail válido.";
     }
     if (password.length < 8) {
       nextErrors.password = "A senha precisa ter pelo menos 8 caracteres.";
@@ -59,7 +59,7 @@ export default function SignInPage() {
       setApiError(
         error instanceof ApiError
           ? error.message
-          : "Nao foi possivel entrar. Revise os dados e tente novamente.",
+          : "Não foi possível entrar. Revise os dados e tente novamente.",
       );
     } finally {
       setIsLoading(false);
@@ -69,10 +69,10 @@ export default function SignInPage() {
   return (
     <AuthShell
       eyebrow="Acesso seguro"
-      highlights={["Manuais", "Diagnostico", "Historico"]}
+      highlights={["Manuais", "Diagnóstico", "Histórico"]}
       side="left"
-      subtitle="Consulte manuais automotivos com precisao operacional."
-      title="Entrar na plataforma"
+      subtitle="Entre para continuar suas consultas aos manuais automotivos."
+      title="Acessar sua conta"
     >
       <form className="space-y-5" onSubmit={handleSubmit}>
         <div className="space-y-2">
@@ -101,25 +101,25 @@ export default function SignInPage() {
         />
 
         {apiError && (
-          <div className="rounded-lg border border-destructive bg-card px-4 py-3 text-sm text-destructive">
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
             {apiError}
           </div>
         )}
         {success && (
-          <div className="rounded-lg border border-success bg-card px-4 py-3 text-sm text-success">
+          <div className="rounded-md border border-success/30 bg-success/5 px-3 py-2.5 text-sm text-success">
             {success}
           </div>
         )}
 
-        <Button className="h-12 w-full" disabled={!isValid || isLoading}>
-          {isLoading ? "Validando credenciais..." : "Entrar"}
+        <Button className="w-full" disabled={!isValid || isLoading}>
+          {isLoading ? "Validando credenciais…" : "Entrar"}
         </Button>
       </form>
 
       <p className="mt-6 text-center text-sm text-muted-foreground">
-        Ainda nao tem conta?{" "}
+        Ainda não tem conta?{" "}
         <Link className="font-semibold text-foreground" href="/signup">
-          Criar acesso
+          Criar conta
         </Link>
       </p>
     </AuthShell>

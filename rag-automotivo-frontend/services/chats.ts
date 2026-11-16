@@ -10,6 +10,7 @@ export type RagSource = {
   page_start: number;
   page_end: number;
   section_title?: string | null;
+  text?: string;
   image_paths: string[];
   metadata?: {
     brand?: string;

@@ -146,4 +146,32 @@ describe('VisualImageService image reranker', () => {
       result.rejectedImages.map((image) => image.reason).join(' '),
     ).toMatch(/capa|capo|generica|vazia|quebrada|inacessivel/i);
   });
+
+  it('aceita imagem da portinhola de combustivel sem exigir contexto de oleo', () => {
+    const service = new VisualImageService();
+    const imagePath =
+      'rag-automotivo-backend/tmp-reranker-images/oil-cap.jpg';
+    const source = {
+      score: 0.91,
+      chunk_id: 'fuel-flap',
+      document_name: '2008-audi-a4.pdf',
+      page_start: 254,
+      page_end: 254,
+      section_title: 'Fuel and filling the tank',
+      text: 'Fig. 248 Fuel tank flap with tank cap attached. Press the left side of the flap to open it.',
+      image_paths: [imagePath],
+      metadata: {},
+    } as RagSource;
+
+    const result = service.rerankImages({
+      resolvedQuery: 'Onde fica a portinhola do tanque de combustível?',
+      intent: 'visual_location',
+      component: 'portinhola do tanque de combustivel',
+      sources: [source],
+      clipResults: [{ imagePath, score: 0.8, page: 254 }],
+    });
+
+    expect(result.selectedImages).toHaveLength(1);
+    expect(result.selectedImages[0].page).toBe(254);
+  });
 });

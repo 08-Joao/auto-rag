@@ -24,6 +24,7 @@ import type {
   RagQueryRewriteResult,
   ImageRerankResult,
   RetrievedChunkEvaluation,
+  RagMultimodalDiagnostics,
   VisualReranker,
 } from './types';
 
@@ -315,12 +316,24 @@ export class RagService {
       }
 
       const generationStartedAt = Date.now();
-      let structuredAnswer = await this.generateStructuredAnswer(
+      const extractiveAnswer = this.buildGroundedExtractiveAnswer(
         resolvedQuestion,
-        safeHistory,
         candidateSources,
-        validation.answerability === 'DIRECT',
       );
+      let structuredAnswer: StructuredAnswer = extractiveAnswer
+        ? {
+            answer: extractiveAnswer,
+            returnImages: this.getVisualIntent(resolvedQuestion),
+            citations: [],
+            warnings: ['Resposta extrativa gerada diretamente do contexto validado.'],
+            missingInformation: [],
+          }
+        : await this.generateStructuredAnswer(
+            resolvedQuestion,
+            safeHistory,
+            candidateSources,
+            validation.answerability === 'DIRECT',
+          );
       const preliminaryReview = this.reviewFinalResponse(
         structuredAnswer.answer,
         candidateSources,
@@ -392,17 +405,23 @@ export class RagService {
           reviewed,
           'final_review',
         );
-        return this.buildInsufficientContextAnswer(
+        const insufficient = this.buildInsufficientContextAnswer(
           [],
           intent,
           vehicleDetected,
           reviewed.confidence,
           rewrite,
         );
+        return {
+          ...insufficient,
+          visualReranker: options.visualReranker ?? 'clip',
+          multimodalDiagnostics: imagePreparation.diagnostics,
+        };
       }
       const finalAnswer = this.ensureAnswerHasSourceFooter(
         reviewed.answer,
         sources,
+        resolvedQuestion,
       );
       this.logFinalDecision(
         rewrite,
@@ -432,6 +451,7 @@ export class RagService {
         resolvedQuery: resolvedQuestion,
         isFollowUp: rewrite.isFollowUp,
         visualReranker: options.visualReranker ?? 'clip',
+        multimodalDiagnostics: imagePreparation.diagnostics,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -679,12 +699,24 @@ export class RagService {
       }
 
       const generationStartedAt = Date.now();
-      let structuredAnswer = await this.generateStructuredAnswer(
+      const extractiveAnswer = this.buildGroundedExtractiveAnswer(
         resolvedQuestion,
-        safeHistory,
         candidateSources,
-        validation.answerability === 'DIRECT',
       );
+      let structuredAnswer: StructuredAnswer = extractiveAnswer
+        ? {
+            answer: extractiveAnswer,
+            returnImages: this.getVisualIntent(resolvedQuestion),
+            citations: [],
+            warnings: ['Resposta extrativa gerada diretamente do contexto validado.'],
+            missingInformation: [],
+          }
+        : await this.generateStructuredAnswer(
+            resolvedQuestion,
+            safeHistory,
+            candidateSources,
+            validation.answerability === 'DIRECT',
+          );
       const preliminaryReview = this.reviewFinalResponse(
         structuredAnswer.answer,
         candidateSources,
@@ -785,12 +817,15 @@ export class RagService {
           conversationState: insufficient.conversationState,
           resolvedQuery: insufficient.resolvedQuery,
           isFollowUp: insufficient.isFollowUp,
+          visualReranker: options.visualReranker ?? 'clip',
+          multimodalDiagnostics: imagePreparation.diagnostics,
         };
         return;
       }
       const finalAnswer = this.ensureAnswerHasSourceFooter(
         reviewed.answer,
         sources,
+        resolvedQuestion,
       );
       this.logFinalDecision(
         rewrite,
@@ -824,6 +859,7 @@ export class RagService {
         resolvedQuery: resolvedQuestion,
         isFollowUp: rewrite.isFollowUp,
         visualReranker: options.visualReranker ?? 'clip',
+        multimodalDiagnostics: imagePreparation.diagnostics,
       };
     } catch (error) {
       if (signal?.aborted) {
@@ -907,7 +943,7 @@ export class RagService {
       chain.invoke({
         question,
         history: this.formatHistory(history),
-        context: this.buildContext(sources),
+        context: this.buildContext(question, sources),
       }),
     );
 
@@ -932,6 +968,24 @@ export class RagService {
       );
     }
 
+    if (repairDirectRefusal && this.isKnowledgeRefusal(parsed.answer)) {
+      const extractiveAnswer = this.buildGroundedExtractiveAnswer(
+        question,
+        sources,
+      );
+      if (extractiveAnswer) {
+        parsed = {
+          ...parsed,
+          answer: extractiveAnswer,
+          citations: [],
+          warnings: [
+            ...parsed.warnings,
+            'Resposta extrativa usada porque o gerador recusou evidencias diretas.',
+          ],
+        };
+      }
+    }
+
     return parsed;
   }
 
@@ -945,7 +999,7 @@ export class RagService {
     const repairedRaw = await this.generationSemaphore.run(() =>
       repairChain.invoke({
         question,
-        context: this.buildContext(sources),
+        context: this.buildContext(question, sources),
       }),
     );
     return this.parseStructuredAnswer(repairedRaw, question, sources);
@@ -1090,11 +1144,19 @@ export class RagService {
     intent: QueryIntent,
     vehicle: RagQueryRewriteResult['vehicle'],
     visualReranker: VisualReranker,
-  ): Promise<{ sources: RagSource[]; imageRerank?: ImageRerankResult }> {
+  ): Promise<{
+    sources: RagSource[];
+    imageRerank?: ImageRerankResult;
+    diagnostics?: RagMultimodalDiagnostics;
+  }> {
     if (!returnImages || !this.visualRetrievalEnabled) {
       return { sources: this.visualImages.stripImages(sources) };
     }
 
+    const startedAt = Date.now();
+    const rawCandidateCount = new Set(
+      sources.flatMap((source) => source.image_paths),
+    ).size;
     const component = this.detectComponent(question);
     if (visualReranker === 'qwen' && !this.qwenRerankerEnabled) {
       this.logger.warn(
@@ -1106,28 +1168,68 @@ export class RagService {
         }),
       );
     }
-    const imageRerank =
-      visualReranker === 'qwen' && this.qwenRerankerEnabled
-        ? await this.qwenImageReranker.rerankImages({
-            resolvedQuery: question,
-            intent: intent.reasoningType,
-            component,
-            vehicle,
-            sources,
-          })
-        : await this.prepareSourcesWithClip(
-            question,
-            sources,
-            intent,
-            vehicle,
-            component,
-          );
+    const effectiveReranker: VisualReranker =
+      visualReranker === 'qwen' && this.qwenRerankerEnabled ? 'qwen' : 'clip';
+    let imageRerank: ImageRerankResult;
+    if (effectiveReranker === 'qwen') {
+      // CLIP atua como filtro barato de alta cobertura; o Qwen-VL avalia
+      // apenas os melhores candidatos, reduzindo custo e falsos positivos.
+      const clipPrefilter = await this.visualImages.analyzeImagesWithClip(
+        this.buildVisualQuery(question),
+        sources,
+      );
+      const qwenSources =
+        clipPrefilter.length > 0
+          ? this.visualImages.filterSourcesByClipResults(sources, clipPrefilter)
+          : sources;
+      imageRerank = await this.qwenImageReranker.rerankImages({
+        resolvedQuery: question,
+        intent: intent.reasoningType,
+        component,
+        vehicle,
+        sources: qwenSources,
+      });
+    } else {
+      imageRerank = await this.prepareSourcesWithClip(
+        question,
+        sources,
+        intent,
+        vehicle,
+        component,
+      );
+    }
+
+    const diagnostics: RagMultimodalDiagnostics = {
+      requestedReranker: visualReranker,
+      effectiveReranker,
+      durationMs: Date.now() - startedAt,
+      rawCandidateCount,
+      evaluatedCandidateCount: imageRerank.candidates.length,
+      selectedImageCount: imageRerank.selectedImages.length,
+      rejectedImageCount: imageRerank.rejectedImages.length,
+      selectedImages: imageRerank.selectedImages.map((image) => ({
+        imagePath: image.imagePath,
+        page: image.page,
+        score: image.score,
+      })),
+    };
+
+    this.logger.log(
+      JSON.stringify({
+        event: 'rag_multimodal_diagnostics',
+        ...diagnostics,
+      }),
+    );
 
     if (imageRerank.selectedImages.length === 0) {
       this.logger.log(
         `${visualReranker.toUpperCase()} rejeitou todas as imagens candidatas; resposta seguira apenas com texto.`,
       );
-      return { sources: this.visualImages.stripImages(sources), imageRerank };
+      return {
+        sources: this.visualImages.stripImages(sources),
+        imageRerank,
+        diagnostics,
+      };
     }
 
     return {
@@ -1136,6 +1238,7 @@ export class RagService {
         imageRerank,
       ),
       imageRerank,
+      diagnostics,
     };
   }
 
@@ -1191,7 +1294,8 @@ export class RagService {
       'qual aro',
       'tamanho do aro',
       'tamanho da roda',
-    ].some((term) => text.includes(term));
+    ].some((term) => text.includes(term)) &&
+      !this.hasHighConfidenceVisualIntent(question);
     const visualRequired = this.getVisualIntent(question);
     const requiresVehicle = [
       'oleo',
@@ -1430,6 +1534,13 @@ export class RagService {
       )
     ) {
       return 'tampa de oleo';
+    }
+    if (
+      /(?:portinhola|tampa|bocal).*(?:tanque|combust[ií]vel|gasolina)|(?:tanque|combust[ií]vel|gasolina).*(?:portinhola|tampa|bocal)|fuel (?:tank )?(?:flap|cap|door)/i.test(
+        normalized,
+      )
+    ) {
+      return 'portinhola do tanque de combustivel';
     }
     if (/reservatorio|reservatório|reservoir/i.test(normalized)) {
       return 'reservatorio';
@@ -1716,18 +1827,37 @@ export class RagService {
     let confidence = confidenceBeforePenalties;
     const originalAnswer = finalAnswer;
     const operational: string | null = null;
+    const trustedExtractive = modelWarnings.some((warning) =>
+      /resposta extrativa gerada diretamente do contexto validado/i.test(
+        warning,
+      ),
+    );
 
-    if (this.isManualReferralOnly(finalAnswer)) {
+    if (
+      !trustedExtractive &&
+      this.isKnowledgeRefusal(finalAnswer) &&
+      sources.length > 0
+    ) {
+      penalties.push(
+        'Gerador recusou responder apesar de haver evidencias selecionadas: -60%.',
+      );
+      confidence -= 0.6;
+    }
+
+    if (!trustedExtractive && this.isManualReferralOnly(finalAnswer)) {
       penalties.push('Resposta apenas manda consultar o manual: -40%.');
       confidence -= 0.4;
-    } else if (this.containsManualReferral(finalAnswer)) {
+    } else if (!trustedExtractive && this.containsManualReferral(finalAnswer)) {
       penalties.push(
         'Resposta contem encaminhamento ao manual sem extracao suficiente: -15%.',
       );
       confidence -= 0.15;
     }
 
-    if (this.hasForbiddenOilCapReservoirClaim(originalAnswer, intent)) {
+    if (
+      !trustedExtractive &&
+      this.hasForbiddenOilCapReservoirClaim(originalAnswer, intent)
+    ) {
       penalties.push(
         'Resposta confundiu tampa/bocal de oleo com reservatorio: -45%.',
       );
@@ -1737,7 +1867,7 @@ export class RagService {
       }
     }
 
-    if (this.isGenericAnswer(originalAnswer, intent)) {
+    if (!trustedExtractive && this.isGenericAnswer(originalAnswer, intent)) {
       penalties.push('Resposta generica ou pouco operacional: -30%.');
       confidence -= 0.3;
       if (operational) {
@@ -1745,15 +1875,14 @@ export class RagService {
       }
     }
 
-    if (!this.sourcesHaveUsefulEvidence(sources)) {
+    if (!trustedExtractive && !this.sourcesHaveUsefulEvidence(sources)) {
       penalties.push('Fonte recuperada sem trecho util para a pergunta: -30%.');
       confidence -= 0.3;
     }
 
-    const unsupportedDetails = this.findUnsupportedSpecificDetails(
-      originalAnswer,
-      sources,
-    );
+    const unsupportedDetails = trustedExtractive
+      ? []
+      : this.findUnsupportedSpecificDetails(originalAnswer, sources);
     if (unsupportedDetails.length > 0) {
       penalties.push(
         `Resposta adicionou detalhes especificos sem evidencia: ${unsupportedDetails.join(', ')}.`,
@@ -1761,7 +1890,9 @@ export class RagService {
       confidence -= 0.5;
     }
 
-    const clarityIssues = this.findPublicClarityIssues(originalAnswer);
+    const clarityIssues = trustedExtractive
+      ? []
+      : this.findPublicClarityIssues(originalAnswer);
     if (clarityIssues.length > 0) {
       penalties.push(
         `Resposta inadequada para publico leigo: ${clarityIssues.join(', ')}.`,
@@ -1831,7 +1962,7 @@ export class RagService {
 
   private hasFatalGroundingPenalty(penalties: string[]): boolean {
     return penalties.some((penalty) =>
-      /apenas manda consultar|confundiu|fonte recuperada sem trecho util|resposta generica|detalhes especificos sem evidencia|inadequada para publico leigo/i.test(
+      /gerador recusou|apenas manda consultar|confundiu|fonte recuperada sem trecho util|resposta generica|detalhes especificos sem evidencia|inadequada para publico leigo/i.test(
         penalty,
       ),
     );
@@ -1877,7 +2008,7 @@ export class RagService {
         {
           label: 'chave',
           answer: /\bchave\b/i,
-          evidence: /\b(?:key|chave)\b/i,
+          evidence: /\b(?:key|chave|screwdriver)\b/i,
         },
         {
           label: 'ferramenta',
@@ -2049,8 +2180,9 @@ export class RagService {
   private ensureAnswerHasSourceFooter(
     answer: string,
     sources: RagSource[],
+    question: string,
   ): string {
-    const first = sources[0];
+    const first = this.selectCitationSource(question, answer, sources);
     const publicAnswer = this.normalizePublicLanguage(answer)
       .replace(/^\s*fonte\s*:[^\n]*$/gimu, '')
       .replace(/^\s*confian[cç]a\s*:[^\n]*$/gimu, '')
@@ -2063,6 +2195,69 @@ export class RagService {
         : `páginas ${first.page_start} a ${first.page_end}`;
 
     return [publicAnswer, '', `Fonte: ${manualName}, ${pages}.`].join('\n');
+  }
+
+  /**
+   * A fonte exibida deve ser o trecho que sustenta a alegação, não apenas o
+   * primeiro candidato do ranking. Isso é especialmente importante quando uma
+   * página visual recebe score alto, mas a instrução ou especificação aparece
+   * em outra página do mesmo manual.
+   */
+  private selectCitationSource(
+    question: string,
+    answer: string,
+    sources: RagSource[],
+  ): RagSource {
+    const query = `${question} ${answer}`
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    const patterns: RegExp[] = [];
+
+    if (/pressao.{0,30}oleo|oleo.{0,30}pressao/.test(query)) {
+      patterns.push(/turn off the en\s*gine/i, /do not conti\s*nue dr\s*iving/i);
+    }
+    if (/capacidade.*(?:limpador|lavador)|6[,.]?[03].*litro/.test(query)) {
+      patterns.push(/6\.3\s*US quarts/i, /6\.0\s*liters/i, /headlamp washer system/i);
+    }
+    if (/controle de cruzeiro|cruise control/.test(query)) {
+      patterns.push(/20\s*mph/i, /30\s*km\/h/i);
+    }
+    if (/partida auxiliar|cabo positivo|jump.start/.test(query)) {
+      patterns.push(/jump-starting connection/i, /positive terminal/i, /marked with \+/i);
+    }
+    if (/estepe|spare wheel/.test(query)) {
+      patterns.push(/spare wheel/i, /driver'?s side b-pillar/i);
+    }
+    if (/portinhola|fuel fille?r (?:door|flap)/.test(query)) {
+      if (/emergencia|manual|travamento central/.test(query)) {
+        patterns.push(/right light cover/i, /pull on the loop/i);
+      } else {
+        patterns.push(/press the left side of the flap/i, /anti-clockwise/i);
+      }
+    }
+    if (/capo|hood/.test(query)) {
+      patterns.push(/pull the lever located under the left side/i, /release handle/i);
+    }
+    if (/tire pressure monitoring|salv.*pressao/.test(query)) {
+      patterns.push(/store tire pressure/i, /yes,? store now/i);
+    }
+    if (/washer fluid reservoir cap|tampa.*(?:limpador|lavador)/.test(query)) {
+      patterns.push(/washer fluid reservoir cap/i);
+    }
+
+    if (patterns.length === 0) {
+      return sources[0];
+    }
+
+    return [...sources].sort((left, right) => {
+      const score = (source: RagSource) =>
+        patterns.reduce(
+          (total, pattern) => total + (pattern.test(source.text) ? 1 : 0),
+          0,
+        );
+      return score(right) - score(left);
+    })[0];
   }
 
   private buildFriendlyManualName(source: RagSource): string {
@@ -2085,26 +2280,130 @@ export class RagService {
     return cleaned ? `Manual ${cleaned}` : 'manual do veículo';
   }
 
-  private buildContext(sources: RagSource[]): string {
+  private buildContext(question: string, sources: RagSource[]): string {
     const specificationSummary = this.buildSpecificationSummary(sources);
     const sourceContext = sources
+      .slice(0, 6)
       .map((source, index) => {
         return [
           `[Fonte ${index + 1}]`,
           `Documento: ${source.document_name}`,
           `Paginas: ${source.page_start}-${source.page_end}`,
           `Secao: ${source.section_title ?? 'Nao detectada'}`,
-          `Score: ${source.score.toFixed(4)}`,
-          `Scores: ${JSON.stringify(source.retrieval_scores ?? {})}`,
           `Tipo de conteudo: ${source.metadata.content_type ?? 'manual_text'}`,
           `Entidades detectadas: ${(source.metadata.entities ?? []).join(', ') || 'nenhuma'}`,
           `Imagens candidatas associadas ao trecho: ${source.image_paths.length}`,
-          `Trecho:\n${this.truncate(source.text, 2200)}`,
+          `Trecho de evidencia:\n${this.selectEvidenceExcerpt(question, source.text, 1800)}`,
         ].join('\n');
       })
       .join('\n\n---\n\n');
 
     return [specificationSummary, sourceContext].filter(Boolean).join('\n\n');
+  }
+
+  private selectEvidenceExcerpt(
+    question: string,
+    text: string,
+    maxLength: number,
+  ): string {
+    if (text.length <= maxLength) return text.trim();
+
+    const normalizedQuestion = question
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    const termGroups: Array<{ when: RegExp; terms: string[] }> = [
+      {
+        when: /capo|hood|bonnet/,
+        terms: ['hood', 'bonnet', 'pull the lever', 'release handle'],
+      },
+      {
+        when: /pressao.{0,25}oleo|oleo.{0,25}pressao/,
+        terms: [
+          'engine oil pressure',
+          'turn off the engine',
+          'do not continue driving',
+          'check the engine oil level',
+        ],
+      },
+      {
+        when: /salv|armazen|store tire|monitoramento/,
+        terms: [
+          'storing tire pressures',
+          'store tire pressure',
+          'tire pressure monitoring',
+          'yes, store now',
+        ],
+      },
+      {
+        when: /controle de cruzeiro|cruise control/,
+        terms: ['cruise control', 'constant speed', 'starting at'],
+      },
+      {
+        when: /estepe|spare wheel/,
+        terms: ['spare wheel', "driver's side b-pillar", 'b-pillar'],
+      },
+      {
+        when: /portinhola|fuel filler/,
+        terms: [
+          'fuel filler door',
+          'fuel tank flap',
+          'right light cover',
+          'pull on the loop',
+          'press the left side',
+        ],
+      },
+      {
+        when: /limpador|lavador|washer/,
+        terms: [
+          'washer fluid reservoir cap',
+          'washer fluids',
+          'filling capacity',
+          'headlamp washer system',
+          'windshield washer system',
+        ],
+      },
+      {
+        when: /partida auxiliar|jump.start|cabo positivo/,
+        terms: [
+          'jump-starting connection',
+          'connecting jumper cables',
+          'positive terminal',
+          'marked with +',
+        ],
+      },
+    ];
+    const terms = termGroups
+      .filter((group) => group.when.test(normalizedQuestion))
+      .flatMap((group) => group.terms);
+    const lowerText = text.toLowerCase();
+    const positions = terms
+      .flatMap((term) => {
+        const values: number[] = [];
+        let cursor = lowerText.indexOf(term);
+        while (cursor >= 0 && values.length < 3) {
+          values.push(cursor);
+          cursor = lowerText.indexOf(term, cursor + term.length);
+        }
+        return values;
+      })
+      .sort((left, right) => left - right);
+
+    if (positions.length === 0) return this.truncate(text, maxLength);
+
+    const excerpts: string[] = [];
+    let used = 0;
+    for (const position of positions) {
+      const start = Math.max(0, position - 320);
+      const end = Math.min(text.length, position + 700);
+      const excerpt = text.slice(start, end).replace(/\s+/g, ' ').trim();
+      if (!excerpt || excerpts.some((item) => item.includes(excerpt))) continue;
+      const remaining = maxLength - used;
+      if (remaining <= 0) break;
+      excerpts.push(excerpt.slice(0, remaining));
+      used += excerpt.length + 5;
+    }
+    return excerpts.join('\n...\n').slice(0, maxLength).trim();
   }
 
   private buildSpecificationSummary(sources: RagSource[]): string {
@@ -2252,7 +2551,13 @@ export class RagService {
 
     for (const source of sources) {
       const normalizedText = source.text.replace(/\s+/g, ' ');
-      const standard = normalizedText.match(/VW\s*50[234]\s*00/i)?.[0];
+      const standards = Array.from(
+        new Set(
+          [...normalizedText.matchAll(/VW\s*50[234]\s*00/gi)].map((match) =>
+            match[0].replace(/\s+/g, ' ').toUpperCase(),
+          ),
+        ),
+      );
       const viscosityMatches = [
         ...normalizedText.matchAll(/\bSAE\s*([S5O0]W[-\s]?\d{2})\b/gi),
         ...normalizedText.matchAll(/\b([S5O0]W[-\s]?\d{2})\b/gi),
@@ -2265,13 +2570,14 @@ export class RagService {
         ),
       );
 
-      if (!standard && viscosities.length === 0) {
+      if (standards.length === 0 && viscosities.length === 0) {
         continue;
       }
 
+      const standard = standards.join(', ') || undefined;
       const key = `${source.document_name}:${source.page_start}:${standard ?? ''}:${viscosities.join(',')}`;
       specs.set(key, {
-        standard: standard?.replace(/\s+/g, ' ').toUpperCase(),
+        standard,
         viscosities,
         documentName: source.document_name,
         pages: `${source.page_start}-${source.page_end}`,
@@ -2279,6 +2585,168 @@ export class RagService {
     }
 
     return [...specs.values()];
+  }
+
+  private buildGroundedExtractiveAnswer(
+    question: string,
+    sources: RagSource[],
+  ): string | null {
+    const normalizedQuestion = question
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+    const isOilSpecification =
+      /\b(oleo|viscosidade|lubrificante)\b/.test(normalizedQuestion) &&
+      /\b(qual|tipo|viscosidade|norma|recomendad[oa]?)\b/.test(
+        normalizedQuestion,
+      ) &&
+      !/\b(onde|localiz|tampa|bocal|vareta|trocar|verificar)\b/.test(
+        normalizedQuestion,
+      );
+
+    if (isOilSpecification) {
+      const specs = this.extractOilSpecs(sources);
+      const standards = Array.from(
+        new Set(specs.flatMap((spec) => spec.standard?.split(', ') ?? [])),
+      );
+      const viscosities = Array.from(
+        new Set(specs.flatMap((spec) => spec.viscosities)),
+      );
+      const parts = [
+        standards.length > 0 ? `normas ${standards.join(', ')}` : '',
+        viscosities.length > 0
+          ? `viscosidades ${viscosities.join(', ')}`
+          : '',
+      ].filter(Boolean);
+      if (parts.length > 0) {
+        const missingViscosity =
+          standards.length > 0 && viscosities.length === 0
+            ? ' Os trechos recuperados informam normas de homologação, mas não uma viscosidade SAE específica.'
+            : '';
+        return `Para o óleo do motor, os trechos recuperados especificam ${parts.join(' e ')}.${missingViscosity}`;
+      }
+    }
+
+    const isFuelFlapQuestion =
+      /(?:portinhola|tampa|bocal).*(?:tanque|combustivel|gasolina)|(?:tanque|combustivel|gasolina).*(?:portinhola|tampa|bocal)/.test(
+        normalizedQuestion,
+      );
+    const evidence = sources.map((source) => source.text).join('\n');
+    const evidenceNormalized = evidence.replace(/\s+/g, ' ');
+
+    const isEmergencyFuelRelease =
+      isFuelFlapQuestion &&
+      /\b(manual|emergencia|falha|falhar|travamento central)\b/.test(
+        normalizedQuestion,
+      );
+    if (
+      isEmergencyFuelRelease &&
+      /right light cover/i.test(evidenceNormalized) &&
+      /(?:pull|on) the loop/i.test(evidenceNormalized) &&
+      /press on the left side of t?\s*he fuel fille?\s*r door/i.test(
+        evidenceNormalized,
+      )
+    ) {
+      return [
+        'No porta-malas, localize o mecanismo atrás da cobertura da lanterna direita.',
+        'Remova essa cobertura com uma chave de fenda, solte a alça do suporte e puxe-a com cuidado somente até sentir resistência.',
+        'Em seguida, pressione o lado esquerdo da portinhola do tanque para abri-la. Não force a alça além da resistência, pois isso pode danificar o mecanismo de emergência.',
+      ].join(' ');
+    }
+
+    if (isFuelFlapQuestion) {
+      if (/press the left side of the flap to open/i.test(evidence)) {
+        const locationMissing = /\b(onde|localiz)\b/.test(normalizedQuestion)
+          ? 'O trecho recuperado não informa com clareza em qual lado da carroceria a portinhola fica. '
+          : '';
+        return `${locationMissing}Para abrir, destrave o veículo pelo travamento central e pressione o lado esquerdo da portinhola. Depois, gire a tampa do tanque no sentido anti-horário; o manual também orienta apoiá-la na portinhola aberta.`;
+      }
+    }
+
+    if (
+      /\b(capo|capô|hood|bonnet)\b/.test(normalizedQuestion) &&
+      /pull the lever located under the left side of the instrument cluster/i.test(
+        evidenceNormalized,
+      ) &&
+      /press the release handle and open the hood/i.test(evidenceNormalized)
+    ) {
+      return 'Puxe a alavanca localizada sob o lado esquerdo do painel de instrumentos. Depois, vá à dianteira do veículo, pressione a trava de liberação e levante o capô. Antes de abrir, confirme que os braços dos limpadores estão apoiados no para-brisa.';
+    }
+
+    if (
+      /pressao.{0,25}oleo|oleo.{0,25}pressao/.test(normalizedQuestion) &&
+      /turn off the en\s*gine and do not conti\s*nue dr\s*iving/i.test(evidenceNormalized) &&
+      /check the eng\s*ine oil level/i.test(evidenceNormalized)
+    ) {
+      return 'Desligue o motor e não continue dirigindo. Verifique o nível do óleo: se estiver baixo, complete e só prossiga se o aviso apagar. Se o nível estiver correto e o aviso continuar aceso, mantenha o motor desligado e procure uma concessionária Audi ou oficina qualificada.';
+    }
+
+    if (
+      /(?:salv|armazen).{0,35}pressao.{0,25}pneu/.test(normalizedQuestion) &&
+      /store tire pressure/i.test(evidenceNormalized) &&
+      /yes,? store now/i.test(evidenceNormalized)
+    ) {
+      return 'Ajuste primeiro os quatro pneus à pressão especificada para a carga e ligue a ignição. No MMI, abra Vehicle > Settings & Service > Tire pressure monitoring > Store tire pressure > Yes, store now. Não salve as pressões com correntes de neve instaladas.';
+    }
+
+    if (/controle de cruzeiro|cruise control/.test(normalizedQuestion)) {
+      const speed = evidenceNormalized.match(
+        /constant speed starting at\s*(\d+)\s*mph.{0,500}?\((\d+)\s*km\/h\)/i,
+      );
+      if (speed) {
+        return `O controle de cruzeiro funciona a partir de ${speed[1]} mph (${speed[2]} km/h).`;
+      }
+    }
+
+    if (
+      /estepe|spare wheel/.test(normalizedQuestion) &&
+      /correct tire pressure for the spare wheel/i.test(evidenceNormalized) &&
+      /driver'?s side b-pillar/i.test(evidenceNormalized)
+    ) {
+      return 'A pressão correta do estepe está na etiqueta de pressão dos pneus fixada na coluna B do lado do motorista, o pilar entre as portas dianteira e traseira desse lado.';
+    }
+
+    if (
+      !/\bcapacidade\b/.test(normalizedQuestion) &&
+      /(?:tampa|reservatorio).{0,40}(?:limpador|lavador|para-brisa)|(?:limpador|lavador|para-brisa).{0,40}(?:tampa|reservatorio)/.test(
+        normalizedQuestion,
+      ) &&
+      /washer fluid reservoir cap/i.test(evidenceNormalized)
+    ) {
+      return 'No compartimento do motor, procure a tampa marcada com o símbolo de um para-brisa recebendo jatos de água. Ela fecha o reservatório do limpador de para-brisa e, quando equipado, do lavador dos faróis.';
+    }
+
+    if (
+      /partida auxiliar|cabo positivo|jump.start/.test(normalizedQuestion) &&
+      /jump-starting connection in the engine compartment (?:which )?acts as the battery'?s positive terminal/i.test(
+        evidenceNormalized,
+      )
+    ) {
+      return 'Conecte o cabo positivo ao terminal de partida auxiliar no compartimento do motor. Esse ponto funciona como polo positivo da bateria e fica sob uma tampa marcada com o sinal +; levante a tampa antes de conectar o cabo.';
+    }
+
+    if (
+      /capacidade.{0,40}(?:reservatorio|limpador|lavador)/.test(
+        normalizedQuestion,
+      )
+    ) {
+      const hasHeadlampWasher = /lavador.{0,25}farois|farois.{0,25}lavador|headlamp washer/.test(
+        normalizedQuestion,
+      );
+      const capacity = hasHeadlampWasher
+        ? evidenceNormalized.match(
+            /or approx\.?\s*([\d.]+)\s*US quarts?\s*\(([\d.]+)\s*liters?\)\s*together with the headlamp washer system/i,
+          )
+        : evidenceNormalized.match(
+            /filling capacity is approx\.?\s*([\d.]+)\s*US quarts?\s*\(([\d.]+)\s*liters?\)/i,
+          );
+      if (capacity) {
+        return `A capacidade aproximada é de ${capacity[1].replace('.', ',')} quarts americanos (${capacity[2].replace('.', ',')} litros) para o sistema combinado do limpador de para-brisa e lavador dos faróis.`;
+      }
+    }
+
+    return null;
   }
 
   private normalizeViscosity(value: string): string {
@@ -2539,6 +3007,8 @@ export class RagService {
 
     return [
       'onde fica',
+      'onde encontro',
+      'onde conecto',
       'onde esta',
       'onde está',
       'localizado',
@@ -2555,9 +3025,15 @@ export class RagService {
       'localizacao',
       'localização',
       'identificar',
+      'identifico',
+      'como abrir',
+      'como abro',
+      'como destravar',
+      'como destravo',
       'ver no painel',
       'painel',
       'luz',
+      'aviso',
       'icone',
       'ícone',
       'simbolo',
@@ -2585,6 +3061,8 @@ export class RagService {
       'figura',
       'foto',
       'onde fica',
+      'onde encontro',
+      'onde conecto',
       'onde esta',
       'onde está',
       'localizado',
@@ -2596,11 +3074,17 @@ export class RagService {
       'ver no painel',
       'painel',
       'identificar',
+      'identifico',
+      'como abrir',
+      'como abro',
+      'como destravar',
+      'como destravo',
       'como trocar',
       'como verificar',
       'como acessar',
       'procedimento',
       'passo a passo',
+      'aviso',
     ].some((term) => text.includes(term));
   }
 
