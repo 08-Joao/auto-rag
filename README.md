@@ -28,7 +28,7 @@ O projeto usa `pnpm-lock.yaml`. Para evitar versões diferentes das testadas, us
 ## 1. Obter o código
 
 ```bash
-git clone <URL-DO-REPOSITORIO>
+git clone https://github.com/08-Joao/auto-rag.git
 cd auto-rag
 ```
 
